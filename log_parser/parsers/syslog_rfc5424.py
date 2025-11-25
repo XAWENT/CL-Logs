@@ -5,9 +5,22 @@ class SyslogRFC5424Parser:
         return bool(re.match(r"\d{4}-\d{2}-\d{2}T", line))
 
     def parse(self, line):
-        m = re.match(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d+))?(.*)", line)
+        raw = line.strip()
+        m = re.match(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d+))?(.*)", raw)
         if not m:
-            return {"format":"syslog_rfc5424","raw":line,"date":"N","time":"N","level":"N","message":line}
+            return {
+                "format": "syslog_rfc5424",
+                "raw": raw,
+                "date": "N",
+                "time": "N",
+                "timestamp": "N",
+                "level": "N",
+                "source": "syslog",
+                "module": "N",
+                "thread": "N",
+                "ids": [],
+                "message": raw
+            }
 
         date, time, usec, rest = m.groups()
 
@@ -15,11 +28,17 @@ class SyslogRFC5424Parser:
         level = lvl_m.group(1) if lvl_m else "N"
 
         return {
-            "format":"syslog_rfc5424",
-            "raw": line,
+            "format": "syslog_rfc5424",
+            "raw": raw,
             "date": date,
             "time": time,
-            "usec": usec or "N",
+            "timestamp": usec or "N",
+
             "level": level,
+            "source": "syslog",
+            "module": "N",
+            "thread": "N",
+
+            "ids": [],
             "message": rest.strip()
         }

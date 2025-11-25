@@ -3,6 +3,48 @@ import os
 import importlib
 from log_parser.fallback import fallback_parse
 
+
+# ============================
+# Универсальная нормализация
+# ============================
+
+STANDARD_FIELDS = {
+    "format": "N",
+    "raw": "N",
+
+    "date": "N",
+    "time": "N",
+    "timestamp": "N",
+
+    "level": "N",
+    "source": "N",
+    "module": "N",
+    "thread": "N",
+
+    "ids": [],
+    "message": "N",
+}
+
+def normalize(parsed: dict):
+    out = {}
+
+    for key, default in STANDARD_FIELDS.items():
+        out[key] = parsed.get(key, default)
+
+    # приведение уровня
+    out["level"] = str(out["level"]).upper()
+
+    # ids должен быть списком
+    if not isinstance(out["ids"], list):
+        out["ids"] = [out["ids"]]
+
+    return out
+
+
+# ============================
+# Загрузка плагинов (парсеров)
+# ============================
+
 _parsers_cache = None
 
 def _load_parsers():
@@ -16,6 +58,7 @@ def _load_parsers():
 
     for fname in os.listdir(pars_dir):
         if fname.endswith(".py") and not fname.startswith("_"):
+
             modname = fname[:-3]
             module = importlib.import_module(f"log_parser.parsers.{modname}")
 
@@ -43,6 +86,10 @@ def _load_parsers():
     return parsers
 
 
+# ============================
+# Главная функция — парс строки
+# ============================
+
 def parse_line(line: str):
     line = line.rstrip("\n")
     parsers = _load_parsers()
@@ -50,28 +97,39 @@ def parse_line(line: str):
     for parser in parsers:
         try:
             if parser.match(line):
-                return parser.parse(line)
-        except Exception:
-            pass
+                parsed = parser.parse(line)
+                return normalize(parsed)
+        except Exception as e:
+            return normalize({
+                "format": "parser_error",
+                "raw": line,
+                "level": "ERROR",
+                "message": f"Parser crashed: {e}",
+            })
 
-    return fallback_parse(line)
+    # fallback
+    return normalize(fallback_parse(line))
 
+
+# ============================
+# Парс файла (стриминг)
+# ============================
 
 def parse_file(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(path)
 
-    out = []
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
-            out.append(parse_line(line))
-    return out
+            yield parse_line(line)
 
 
-def get_errors(logs):
-    out = []
-    for log in logs:
+# ============================
+# Фильтр ошибок
+# ============================
+
+def get_errors(log_stream):
+    for log in log_stream:
         lvl = log.get("level", "N")
         if lvl in ("ERROR", "FATAL", "CRITICAL"):
-            out.append(log)
-    return out
+            yield log
