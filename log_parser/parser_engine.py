@@ -1,56 +1,52 @@
 from __future__ import annotations
+import os
 import importlib
-import pkgutil
-from typing import Any, Dict, List
+from log_parser.fallback import fallback_parse
 
-from . import fallback
-
-_PARSERS = None
-
+_parsers_cache = None
 
 def _load_parsers():
-    """
-    Автоматически находит все модули в log_parser/parsers/
-    и инициализирует все классы вида:
+    global _parsers_cache
+    if _parsers_cache is not None:
+        return _parsers_cache
 
-        class SomethingParser:
-            def match(...)
-            def parse(...)
+    parsers = []
+    base = os.path.dirname(__file__)
+    pars_dir = os.path.join(base, "parsers")
 
-    """
-    global _PARSERS
-    if _PARSERS is not None:
-        return _PARSERS
+    for fname in os.listdir(pars_dir):
+        if fname.endswith(".py") and not fname.startswith("_"):
+            modname = fname[:-3]
+            module = importlib.import_module(f"log_parser.parsers.{modname}")
 
-    _PARSERS = []
+            for attr in dir(module):
+                obj = getattr(module, attr)
+                import typing
 
-    # ВАЖНО: правильное имя пакета
-    pkg = __package__ + ".parsers"
+                if isinstance(obj, type):
 
-    # загружаем модуль пакета parsers
-    module = importlib.import_module(pkg)
+                    if obj in (str, int, float, list, dict, tuple, set, type, object):
+                        continue
 
-    # итерируемся по файлам в папке parsers/
-    for _, modname, _ in pkgutil.iter_modules(module.__path__):
-        full_module_name = f"{pkg}.{modname}"
-        mod = importlib.import_module(full_module_name)
+                    if obj is typing.Any:
+                        continue
 
-        # ищем классы, которые выглядят как парсеры
-        for name in dir(mod):
-            obj = getattr(mod, name)
-            if hasattr(obj, "match") and hasattr(obj, "parse") and callable(obj):
-                try:
-                    _PARSERS.append(obj())  # создаём экземпляр класса
-                except Exception:
-                    pass
+                    try:
+                        instance = obj()
+                    except Exception:
+                        continue
 
-    return _PARSERS
+                    if hasattr(instance, "match") and hasattr(instance, "parse"):
+                        parsers.append(instance)
+
+    _parsers_cache = parsers
+    return parsers
 
 
-def parse_line(line: str) -> Dict[str, Any]:
+def parse_line(line: str):
+    line = line.rstrip("\n")
     parsers = _load_parsers()
 
-    # пробуем плагины
     for parser in parsers:
         try:
             if parser.match(line):
@@ -58,11 +54,13 @@ def parse_line(line: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # если никто не справился → fallback
-    return fallback.fallback_parse(line)
+    return fallback_parse(line)
 
 
-def parse_file(path: str) -> List[Dict[str, Any]]:
+def parse_file(path: str):
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+
     out = []
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -70,25 +68,10 @@ def parse_file(path: str) -> List[Dict[str, Any]]:
     return out
 
 
-def get_errors(logs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    output = []
-    for e in logs:
-        lvl = (e.get("level") or "").upper()
-
-        # уровни ошибок
-        if lvl in ("ERROR", "WARN", "FATAL", "CRITICAL"):
-            output.append(e)
-            continue
-
-        # HTTP коды
-        if e.get("status_code", 0) >= 500:
-            output.append(e)
-            continue
-
-        # слова в сообщении
-        msg = (e.get("message") or "").lower()
-        if any(w in msg for w in ["exception", "traceback", "fatal", "panic"]):
-            output.append(e)
-            continue
-
-    return output
+def get_errors(logs):
+    out = []
+    for log in logs:
+        lvl = log.get("level", "N")
+        if lvl in ("ERROR", "FATAL", "CRITICAL"):
+            out.append(log)
+    return out
