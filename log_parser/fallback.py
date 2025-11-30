@@ -1,89 +1,88 @@
 from __future__ import annotations
 import re
 
-# ------------------------------
-# UNIVERSAL DATE/TIME DETECTION
-# ------------------------------
-
 DATE_PATTERNS = [
-    r"\b\d{1,2}\.\d{1,2}\.\d{2}\b",
-    r"\b\d{1,2}\.\d{1,2}\.\d{4}\b",
-    r"\b\d{4}-\d{2}-\d{2}\b",
-    r"\b\d{1,2}/\d{1,2}/\d{4}\b",
-    r"\b\d{1,2}\.\d{1,2}\b",
+    r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",     # 15.11.23 15/11/2023 15-11-23
+    r"\b\d{4}-\d{2}-\d{2}\b",                  # 2025-11-24
+    r"\b[A-Z][a-z]{2}\s+\d{1,2}\b",            # Nov 24  (syslog)
 ]
 
 TIME_PATTERNS = [
     r"\b\d{2}:\d{2}:\d{2}\b",
     r"\b\d{2}:\d{2}\b",
+    r"\b\d{6}\.\d{3}\b",                       # 182414.603
 ]
 
-def extract_date_and_time(line: str):
-    date = "N"
-    time = "N"
-
+def extract_date(line: str):
     for p in DATE_PATTERNS:
         m = re.search(p, line)
         if m:
-            date = m.group(0)
-            break
+            return m.group(0)
+    return "N"
 
+def extract_time(line: str):
     for p in TIME_PATTERNS:
         m = re.search(p, line)
         if m:
-            time = m.group(0)
-            break
-
-    return date, time
-
-
-# ------------------------------
-# ADVANCED FALLBACK PARSER (PRO)
-# ------------------------------
+            t = m.group(0)
+            if len(t) == 6 or "." in t:        # форматы типа 192414.603
+                return f"{t[:2]}:{t[2:4]}:{t[4:]}"
+            return t
+    return "N"
 
 LEVELS = [
-    "ERROR", "WARN", "WARNING", "INFO",
-    "DEBUG", "CRITICAL", "FATAL"
+    "ERROR", "ERR", "WARN", "WARNING",
+    "INFO", "DEBUG", "CRITICAL", "FATAL"
 ]
 
 LEVEL_ALIAS = {
-    "WARNING": "WARN"
+    "WARNING": "WARN",
+    "ERR": "ERROR"
 }
 
-TAG_PATTERN = re.compile(r"\[([A-Za-z0-9_\- ]+)\]")
-ID_PATTERN  = re.compile(r"(#\d+|\bERR\d+\b|\bE\d{3,5}\b)")
-
 def detect_level(text: str):
-    up = text.upper()
-    for lvl in LEVELS:
-        if lvl in up:
-            return LEVEL_ALIAS.get(lvl, lvl)
+    parts = re.findall(r"\b[A-Z]{3,9}\b", text.upper())
+    for p in parts:
+        if p in LEVELS:
+            return LEVEL_ALIAS.get(p, p)
     return "N"
 
+SOURCE_PATTERNS = [
+    r"\b[A-Za-z0-9_\-]+\.(cpp|cc|py|js|go|rs)\b",
+    r"\b[A-Za-z0-9_\-]+\[[0-9]+\]:",
+    r"\b[A-Za-z0-9_\-]+(?:\s+service)?\b",
+]
+
 def extract_source(line: str):
-    m = TAG_PATTERN.search(line)
-    if m:
-        return m.group(1)
+    for p in SOURCE_PATTERNS:
+        m = re.search(p, line)
+        if m:
+            return m.group(0).replace(":", "")
     return "generic"
 
 def clean_message(line: str):
-    line = TAG_PATTERN.sub("", line)
+    msg = line
 
     for p in DATE_PATTERNS + TIME_PATTERNS:
-        line = re.sub(p, "", line)
+        msg = re.sub(p, "", msg)
+
+    msg = re.sub(r"\[[A-Za-z0-9_]+\]", "", msg)
 
     for lvl in LEVELS:
-        line = re.sub(rf"\b{lvl}\b", "", line, flags=re.IGNORECASE)
+        msg = re.sub(rf"\b{lvl}\b", "", msg, flags=re.IGNORECASE)
 
-    return " ".join(line.split()).strip()
+    msg = msg.replace("::", ":")
 
+    msg = " ".join(msg.split()).strip()
 
+    return msg if msg else line
 def fallback_parse(line: str):
     raw = line.strip()
-    date, time = extract_date_and_time(raw)
+
+    date = extract_date(raw)
+    time = extract_time(raw)
     level = detect_level(raw)
     source = extract_source(raw)
-    error_ids = ID_PATTERN.findall(raw) or []
     message = clean_message(raw)
 
     return {
@@ -98,6 +97,5 @@ def fallback_parse(line: str):
         "module": "N",
         "thread": "N",
 
-        "ids": error_ids,
         "message": message,
     }
