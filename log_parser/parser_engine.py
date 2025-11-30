@@ -85,11 +85,6 @@ def _load_parsers():
     _parsers_cache = parsers
     return parsers
 
-
-# ============================
-# Главная функция — парс строки
-# ============================
-
 def parse_line(line: str):
     line = line.rstrip("\n")
     parsers = _load_parsers()
