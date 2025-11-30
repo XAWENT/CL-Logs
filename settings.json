@@ -1,0 +1,6 @@
+{
+    "WARN": true,
+    "ERROR": true,
+    "CRITICAL": true,
+    "INFO": false
+}
