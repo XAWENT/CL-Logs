@@ -1,4 +1,51 @@
+# ---------- Python ----------
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyd
+*.pyo
 
+# ---------- Virtualenv ----------
+venv/
+env/
+.venv/
+
+# ---------- IDE ----------
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# ---------- PyCharm ----------
 .idea/shelf/
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/dictionaries
+.idea/httpRequests
+.idea/dataSources
+.idea/dataSources.local.xml
+
+# ---------- Builds ----------
+build/
+dist/
+*.egg-info/
+*.spec
+*.exe
+
+# ---------- Logs ----------
+*.log
+
+# ---------- OS ----------
+Thumbs.db
+.DS_Store
+
+# ---------- Tests / cache ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# ---------- Notebooks ----------
+.ipynb_checkpoints/
