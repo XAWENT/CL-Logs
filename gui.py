@@ -12,6 +12,8 @@ from logic.settings import load_settings, save_settings, restoretodefaults
 class LogAnalyzerApp:
     def __init__(self, root):
         self.root = root
+        root.tk.call('source', 'forest-light.tcl')
+        ttk.Style().theme_use('forest-light')
         self.root.title("Анализатор логов")
         self.root.geometry("1400x800")
         self.dangers = load_settings()
