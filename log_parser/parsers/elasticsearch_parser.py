@@ -17,7 +17,6 @@ class ElasticsearchParser:
         r"\s*(.*)$"
     )
     
-    # ES 8.x format with action
     _pattern_v8 = re.compile(
         r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\]"
         r"\[(\w+)\]"
