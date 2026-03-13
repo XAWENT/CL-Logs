@@ -25,7 +25,6 @@ class ElasticsearchParser:
         r"\s*(.*)$"
     )
     
-    # GC (Garbage Collection) logs
     _gc_pattern = re.compile(
         r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4})\]\s+"
         r"\[gc\]\s+(\w+)\s+(.*)$"
