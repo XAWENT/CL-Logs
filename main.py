@@ -61,7 +61,7 @@ def setup_notifications():
 
         print(C.C + "\n🔍 Проверяем соединение с сервером..." + C.RESET)
         try:
-            health_response = requests.get("http://localhost:5000/health", timeout=3)
+            health_response = requests.get("http://94.183.235.102:5000/", timeout=3)
             if health_response.status_code != 200:
                 print(C.R + "❌ Сервер недоступен. Проверьте запущен ли сервер на порту 5000." + C.RESET)
                 retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()

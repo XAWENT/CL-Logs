@@ -1,51 +1,87 @@
-# ---------- Python ----------
+# ---------- Python bytecode / caches ----------
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyd
 *.pyo
 
-# ---------- Virtualenv ----------
-venv/
-env/
+# ---------- Virtual environments ----------
 .venv/
+venv/
+venv.bak/
+env/
+env.bak/
+ENV/
 
-# ---------- IDE ----------
+# ---------- Packaging / build artifacts ----------
+build/
+dist/
+site/
+htmlcov/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+*.whl
+*.spec
+*.manifest
+
+# ---------- Test / lint / type-check caches ----------
+.pytest_cache/
+.hypothesis/
+.tox/
+.nox/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.coverage
+.coverage.*
+coverage.xml
+
+# ---------- Logs / runtime / temp ----------
+*.log
+*.pid
+*.pid.lock
+*.seed
+*.stackdump
+logs/
+*.tmp
+*.temp
+*.bak
+*.old
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+
+# ---------- Local env / secrets ----------
+.env
+.env.*
+!.env.example
+
+# ---------- IDE / editors ----------
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.swp
+*.swo
+*~
 
-# ---------- PyCharm ----------
-.idea/shelf/
-.idea/workspace.xml
-.idea/tasks.xml
-.idea/dictionaries
-.idea/httpRequests
-.idea/dataSources
-.idea/dataSources.local.xml
-
-# ---------- Builds ----------
-build/
-dist/
-*.egg-info/
-*.spec
-*.exe
-
-# ---------- Logs ----------
-*.log
-
-# ---------- OS ----------
-Thumbs.db
+# ---------- OS files ----------
 .DS_Store
-
-# ---------- Tests / cache ----------
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.hypothesis/
-
-# ---------- Notebooks ----------
-.ipynb_checkpoints/
+.DS_Store?
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.Spotlight-V100/
+.Trashes/
+ehthumbs.db
