@@ -141,8 +141,6 @@ class LogAnalyzerApp:
     def send_notification(self, level, message, source, timestamp=""):
         if not self.notifications_enabled or not self.user_hash:
             return False
-        if level not in ["ERROR", "WARN"]:
-            return False
 
         try:
             tg_message = f"⚠️ {level}\n📝 Сообщение: {message}"
@@ -152,6 +150,9 @@ class LogAnalyzerApp:
                 "level": level
             }
             response = requests.post(f"{BASE_URL}/send", json=send_data, timeout=10)
+
+            if response.status_code != 200:
+                return False
 
             if level == "ERROR":
                 email_subject = f"🚨 КРИТИЧЕСКАЯ ОШИБКА - {timestamp}"
@@ -174,7 +175,7 @@ class LogAnalyzerApp:
                 }
                 requests.post(f"{BASE_URL}/send_email", json=email_data, timeout=10)
 
-            return response.status_code == 200
+            return True
         except Exception:
             return False
 
@@ -597,7 +598,7 @@ class LogAnalyzerApp:
             self.entries_listbox.itemconfig(tk.END, {'fg': color})
         self.update_count_label()
 
-        if entry["is_danger"] and entry["level"] in ["ERROR", "WARN"] and self.notifications_enabled and self.user_hash:
+        if entry["is_danger"] and self.notifications_enabled and self.user_hash:
             timestamp = f"{entry['date']} {entry['time']}" if entry["date"] != "N" else entry["time"]
             threading.Thread(target=self.send_notification,
                              args=(entry["level"], entry["message"], entry["source"], timestamp),

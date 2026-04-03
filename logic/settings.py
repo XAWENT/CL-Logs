@@ -4,10 +4,13 @@ import json
 settings_file = 'settings.json'
 
 default_dangers = {
+    "DEBUG": False,
+    "TRACE": False,
     "WARN": True,
     "ERROR": True,
     "CRITICAL": True,
-    "INFO": False
+    "INFO": False,
+    "NOTICE": False
 }
 
 def load_settings():
@@ -16,7 +19,10 @@ def load_settings():
 
     try:
         with open(settings_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            merged = default_dangers.copy()
+            merged.update(data)
+            return merged
     except:
         return default_dangers.copy()
 

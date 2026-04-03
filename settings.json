@@ -1,6 +1,9 @@
 {
-    "WARN": true,
-    "ERROR": true,
-    "CRITICAL": true,
-    "INFO": false
+    "DEBUG": false,
+    "TRACE": false,
+    "WARN": false,
+    "ERROR": false,
+    "CRITICAL": false,
+    "INFO": false,
+    "NOTICE": false
 }

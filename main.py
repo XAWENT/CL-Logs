@@ -128,29 +128,26 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
         return False
 
     try:
-        if level in ["ERROR", "WARN"]:
-            telegram_message = f"""
+        telegram_message = f"""
 ⚠️ {level}
 📝 Сообщение: {message}
 """
 
-            send_data = {
-                "user_hash": user_hash,
-                "message": telegram_message.strip(),
-                "level": level
-            }
+        send_data = {
+            "user_hash": user_hash,
+            "message": telegram_message.strip(),
+            "level": level
+        }
 
-            response = requests.post(
-                f"{BASE_URL}/send",
-                headers={"Content-Type": "application/json"},
-                json=send_data,
-                timeout=10
-            )
+        response = requests.post(
+            f"{BASE_URL}/send",
+            headers={"Content-Type": "application/json"},
+            json=send_data,
+            timeout=10
+        )
 
-            if response.status_code == 200:
-                return True
-            else:
-                return False
+        if response.status_code != 200:
+            return False
 
         if level == "ERROR":
             email_subject = f"🚨 КРИТИЧЕСКАЯ ОШИБКА в системе - {timestamp}"
@@ -181,6 +178,8 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
             )
 
             return response.status_code == 200
+
+        return True
 
     except:
         return False
@@ -244,8 +243,7 @@ def main():
 
                     print(color + "─" * 40 + C.RESET)
 
-                    if notifications_enabled and user_hash and entry["level"] in ["ERROR", "WARN"] and entry[
-                        "is_danger"]:
+                    if notifications_enabled and user_hash and entry["is_danger"]:
                         print(C.C + "📨 Отправка уведомления..." + C.RESET)
                         if send_notification(
                                 level=entry["level"],
@@ -335,7 +333,7 @@ def main():
 
                 print(color + "─" * 40 + C.RESET)
 
-                if notifications_enabled and user_hash and entry["level"] in ["ERROR", "WARN"] and entry["is_danger"]:
+                if notifications_enabled and user_hash and entry["is_danger"]:
                     print(C.C + "📨 Отправка уведомления..." + C.RESET)
                     if send_notification(
                             level=entry["level"],
