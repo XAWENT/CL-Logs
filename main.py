@@ -8,6 +8,8 @@ from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
 from logic.settings import load_settings, save_settings, restoretodefaults
 
+BASE_URL = "http://94.183.235.102:5000"
+
 
 def check_notifications_status():
     user_hash = None
@@ -61,7 +63,7 @@ def setup_notifications():
 
         print(C.C + "\n🔍 Проверяем соединение с сервером..." + C.RESET)
         try:
-            health_response = requests.get("http://94.183.235.102:5000/", timeout=3)
+            health_response = requests.get(f"{BASE_URL}/", timeout=3)
             if health_response.status_code != 200:
                 print(C.R + "❌ Сервер недоступен. Проверьте запущен ли сервер на порту 5000." + C.RESET)
                 retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
@@ -71,11 +73,12 @@ def setup_notifications():
 
             test_data = {
                 "user_hash": user_hash,
-                "message": "🔧 Тестовая проверка системы уведомлений\n✅ Соединение установлено"
+                "message": "🔧 Тестовая проверка системы уведомлений\n✅ Соединение установлено",
+                "level": "INFO"   # добавлен уровень для теста
             }
 
             response = requests.post(
-                "http://localhost:5000/send",
+                f"{BASE_URL}/send",
                 headers={"Content-Type": "application/json"},
                 json=test_data,
                 timeout=5
@@ -124,27 +127,21 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
     if not user_hash:
         return False
 
-    base_url = "http://localhost:5000"
-
     try:
         if level in ["ERROR", "WARN"]:
             telegram_message = f"""
-⚠️ {level} В СИСТЕМЕ
-
-📅 Время: {timestamp}
-🔧 Источник: {source}
+⚠️ {level}
 📝 Сообщение: {message}
-
-🔴 Уровень: {level}
 """
 
             send_data = {
                 "user_hash": user_hash,
-                "message": telegram_message.strip()
+                "message": telegram_message.strip(),
+                "level": level       # добавлен уровень согласно примеру
             }
 
             response = requests.post(
-                f"{base_url}/send",
+                f"{BASE_URL}/send",
                 headers={"Content-Type": "application/json"},
                 json=send_data,
                 timeout=10
@@ -177,7 +174,7 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
             }
 
             response = requests.post(
-                f"{base_url}/send_email",
+                f"{BASE_URL}/send_email",
                 headers={"Content-Type": "application/json"},
                 json=email_data,
                 timeout=10
