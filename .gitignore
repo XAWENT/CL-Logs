@@ -43,6 +43,8 @@ coverage.xml
 
 # ---------- Logs / runtime / temp ----------
 *.log
+!Test logs/
+!Test logs/*.log
 *.pid
 *.pid.lock
 *.seed
