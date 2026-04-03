@@ -6,7 +6,7 @@ import threading
 import queue
 import re
 import json
-import requests      # для HTTP-запросов к серверу уведомлений
+import requests
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
 from logic.settings import load_settings, save_settings, restoretodefaults
@@ -20,12 +20,10 @@ class LogAnalyzerApp:
         root.tk.call('source', 'forest-light.tcl')
         root.tk.call('source', 'forest-dark.tcl')
 
-        # Тема
         self.current_theme = tk.StringVar(value="forest-light")
         self.style = ttk.Style()
         self.style.theme_use(self.current_theme.get())
 
-        # Окна
         self.settings_window = None
         self.hash_window = None
         self.notify_window = None
@@ -33,20 +31,16 @@ class LogAnalyzerApp:
         self.root.title("Анализатор логов")
         self.root.geometry("1400x800")
 
-        # Настройки опасных уровней
         self.dangers = load_settings()
 
-        # Настройки уведомлений и user_hash
         self.user_config_path = "user_config.json"
         self.user_hash = ""
         self.notifications_enabled = False
         self.load_user_config()
 
-        # Очередь для потоков
         self.log_queue = queue.Queue()
         self.realtime_running = False
 
-        # Данные логов
         self.current_log_path = ""
         self.parsed_entries = []
         self.current_entries = []
@@ -56,11 +50,7 @@ class LogAnalyzerApp:
         self.process_queue()
         self.apply_theme()
 
-    # ------------------------------------------------------------
-    # Работа с user_config.json
-    # ------------------------------------------------------------
     def load_user_config(self):
-        """Загружает user_hash и статус уведомлений из файла"""
         if os.path.exists(self.user_config_path):
             try:
                 with open(self.user_config_path, 'r', encoding='utf-8') as f:
@@ -75,7 +65,6 @@ class LogAnalyzerApp:
             self.notifications_enabled = False
 
     def save_user_config(self):
-        """Сохраняет только user_hash (остальное не трогаем)"""
         data = {"user_hash": self.user_hash}
         try:
             with open(self.user_config_path, 'w', encoding='utf-8') as f:
@@ -83,12 +72,7 @@ class LogAnalyzerApp:
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить user_hash: {e}")
 
-    # ------------------------------------------------------------
-    # Уведомления (как в консольной версии)
-    # ------------------------------------------------------------
     def setup_notifications_gui(self):
-        """Диалог настройки уведомлений с проверкой сервера"""
-        # Если уже есть хэш, спросим использовать ли его
         if self.user_hash:
             answer = messagebox.askyesno(
                 "Настройка уведомлений",
@@ -116,7 +100,6 @@ class LogAnalyzerApp:
                 messagebox.showerror("Ошибка", "Хэш слишком короткий (минимум 8 символов).")
                 continue
 
-            # Проверка сервера
             try:
                 resp = requests.get(f"{BASE_URL}/", timeout=3)
                 if resp.status_code != 200:
@@ -156,14 +139,12 @@ class LogAnalyzerApp:
                     return False
 
     def send_notification(self, level, message, source, timestamp=""):
-        """Отправка уведомления (в отдельном потоке)"""
         if not self.notifications_enabled or not self.user_hash:
             return False
         if level not in ["ERROR", "WARN"]:
             return False
 
         try:
-            # Telegram
             tg_message = f"⚠️ {level}\n📝 Сообщение: {message}"
             send_data = {
                 "user_hash": self.user_hash,
@@ -172,7 +153,6 @@ class LogAnalyzerApp:
             }
             response = requests.post(f"{BASE_URL}/send", json=send_data, timeout=10)
 
-            # Для ERROR ещё и email
             if level == "ERROR":
                 email_subject = f"🚨 КРИТИЧЕСКАЯ ОШИБКА - {timestamp}"
                 email_message = f"""
@@ -199,7 +179,6 @@ class LogAnalyzerApp:
             return False
 
     def open_notification_settings(self):
-        """Окно управления уведомлениями"""
         if self.notify_window and self.notify_window.winfo_exists():
             self.notify_window.lift()
             return
@@ -226,7 +205,7 @@ class LogAnalyzerApp:
         def enable():
             if self.setup_notifications_gui():
                 self.notifications_enabled = True
-                self.update_stats_display()  # обновим статистику
+                self.update_stats_display()
                 messagebox.showinfo("Уведомления", "Уведомления включены.")
             else:
                 self.notifications_enabled = False
@@ -261,28 +240,21 @@ class LogAnalyzerApp:
         ttk.Button(btn_frame, text="Закрыть", command=win.destroy).pack(side=tk.RIGHT, padx=5)
         win.protocol("WM_DELETE_WINDOW", win.destroy)
 
-    # ------------------------------------------------------------
-    # Построение интерфейса
-    # ------------------------------------------------------------
     def create_widgets(self):
         main_container = ttk.Frame(self.root)
         main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Левая панель (список записей)
         left_panel = ttk.Frame(main_container, width=250)
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 5))
         left_panel.pack_propagate(False)
 
-        # Центральная панель (детали)
         center_panel = ttk.Frame(main_container)
         center_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Правая панель (управление)
         right_panel = ttk.Frame(main_container, width=300)
         right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(5, 0))
         right_panel.pack_propagate(False)
 
-        # ----- Левая панель: список -----
         list_frame = ttk.LabelFrame(left_panel, text="Записи лога")
         list_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -310,7 +282,6 @@ class LogAnalyzerApp:
         self.entries_listbox.configure(yscrollcommand=scrollbar.set)
         self.entries_listbox.bind('<<ListboxSelect>>', self.on_entry_select)
 
-        # ----- Центральная панель: детали и raw -----
         detail_frame = ttk.LabelFrame(center_panel, text="Детали записи")
         detail_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
         self.detail_text = scrolledtext.ScrolledText(detail_frame, wrap=tk.WORD,
@@ -325,7 +296,6 @@ class LogAnalyzerApp:
                                                   height=10, state='disabled')
         self.raw_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # ----- Правая панель: управление -----
         ttk.Label(right_panel, text="Анализатор логов", font=("Arial", 12, "bold")).pack(pady=10)
 
         file_frame = ttk.LabelFrame(right_panel, text="Файл лога")
@@ -369,9 +339,6 @@ class LogAnalyzerApp:
         self.status_var = tk.StringVar(value="Готов к работе")
         ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W).pack(side=tk.BOTTOM, fill=tk.X)
 
-    # ------------------------------------------------------------
-    # Настройки hash кода (изменение user_hash)
-    # ------------------------------------------------------------
     def open_hash_settings(self):
         if self.hash_window and self.hash_window.winfo_exists():
             self.hash_window.lift()
@@ -413,9 +380,6 @@ class LogAnalyzerApp:
         ttk.Button(btn_frame, text="Отмена", command=cancel).pack(side=tk.RIGHT, padx=5)
         win.protocol("WM_DELETE_WINDOW", cancel)
 
-    # ------------------------------------------------------------
-    # Остальные методы (тема, выбор файла, реалтайм, анализ, очередь и т.д.)
-    # ------------------------------------------------------------
     def toggle_theme(self):
         if self.current_theme.get() == "forest-light":
             self.current_theme.set("forest-dark")
@@ -575,7 +539,8 @@ class LogAnalyzerApp:
                 self.dangers[lvl] = check_vars[lvl].get()
             save_settings(self.dangers)
             self.update_stats_display()
-            self.settings_window.destroy()
+            if self.settings_window:
+                self.settings_window.destroy()
             self.settings_window = None
             messagebox.showinfo("Успех", "Настройки сохранены!")
 
@@ -583,12 +548,14 @@ class LogAnalyzerApp:
             self.dangers = restoretodefaults()
             save_settings(self.dangers)
             self.update_stats_display()
-            self.settings_window.destroy()
+            if self.settings_window:
+                self.settings_window.destroy()
             self.settings_window = None
             messagebox.showinfo("Успех", "Настройки восстановлены по умолчанию!")
 
         def on_closing():
-            self.settings_window.destroy()
+            if self.settings_window:
+                self.settings_window.destroy()
             self.settings_window = None
 
         self.settings_window.protocol("WM_DELETE_WINDOW", on_closing)
@@ -630,7 +597,6 @@ class LogAnalyzerApp:
             self.entries_listbox.itemconfig(tk.END, {'fg': color})
         self.update_count_label()
 
-        # Отправка уведомления, если запись опасная и уведомления включены
         if entry["is_danger"] and entry["level"] in ["ERROR", "WARN"] and self.notifications_enabled and self.user_hash:
             timestamp = f"{entry['date']} {entry['time']}" if entry["date"] != "N" else entry["time"]
             threading.Thread(target=self.send_notification,

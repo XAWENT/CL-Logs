@@ -24,4 +24,4 @@ def start_mc_realtime(path):
             continue
 
         parsed = parse_line(raw)
-        yield parsed  # КЛЮЧ: возвращаем наружу, НЕ print
+        yield parsed

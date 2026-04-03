@@ -74,7 +74,7 @@ def setup_notifications():
             test_data = {
                 "user_hash": user_hash,
                 "message": "🔧 Тестовая проверка системы уведомлений\n✅ Соединение установлено",
-                "level": "INFO"   # добавлен уровень для теста
+                "level": "INFO"
             }
 
             response = requests.post(
@@ -137,7 +137,7 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
             send_data = {
                 "user_hash": user_hash,
                 "message": telegram_message.strip(),
-                "level": level       # добавлен уровень согласно примеру
+                "level": level
             }
 
             response = requests.post(

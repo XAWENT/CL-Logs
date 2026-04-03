@@ -43,11 +43,12 @@ class MySQLParser:
     
     def match(self, line: str) -> bool:
         stripped = line.strip()
-        
-        # Check for MySQL timestamp format
+
         return bool(
             re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", stripped) or
-            re.match(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", stripped)
+            self._mariadb_pattern.match(stripped) or
+            re.match(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\[(?:\w+)\]", stripped) or
+            re.match(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\w+:\s+", stripped)
         )
     
     def parse(self, line: str) -> Dict[str, Any]:
@@ -93,7 +94,7 @@ class MySQLParser:
         }
     
     def _build_result(self, timestamp: str, level: str, message: str,
-                     thread_id: str, subsystem: str) -> Dict[str, Any]:
+                     thread_id: str | None, subsystem: str) -> Dict[str, Any]:
         """Build standardized result."""
         # Parse timestamp
         if "T" in timestamp:

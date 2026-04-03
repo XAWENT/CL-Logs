@@ -4,10 +4,6 @@ import importlib
 from log_parser.fallback import fallback_parse
 
 
-# ============================
-# Универсальная нормализация
-# ============================
-
 STANDARD_FIELDS = {
     "format": "N",
     "raw": "N",
@@ -74,19 +70,13 @@ def normalize(parsed: dict):
     for key, default in STANDARD_FIELDS.items():
         out[key] = parsed.get(key, default)
 
-    # приведение уровня
     out["level"] = normalize_level(out.get("level"), str(out.get("message", "")))
 
-    # ids должен быть списком
     if not isinstance(out["ids"], list):
         out["ids"] = [out["ids"]]
 
     return out
 
-
-# ============================
-# Загрузка плагинов (парсеров)
-# ============================
 
 _parsers_cache = None
 
@@ -145,13 +135,8 @@ def parse_line(line: str):
                 "message": f"Parser crashed: {e}",
             })
 
-    # fallback
     return normalize(fallback_parse(line))
 
-
-# ============================
-# Парс файла (стриминг)
-# ============================
 
 def parse_file(path: str):
     if not os.path.exists(path):
@@ -161,10 +146,6 @@ def parse_file(path: str):
         for line in f:
             yield parse_line(line)
 
-
-# ============================
-# Фильтр ошибок
-# ============================
 
 def get_errors(log_stream):
     for log in log_stream:
