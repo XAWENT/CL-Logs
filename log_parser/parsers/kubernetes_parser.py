@@ -13,27 +13,27 @@ class KubernetesParser:
     
     # Klog format: I0115 10:30:45.123456    1 file.go:123] message
     _klog_pattern = re.compile(
-        r"^([A-Z])\d{4}\s+(\d{2}:\d{2}:\d{2}\.\d+)\s+"
+        r"^([IWDVEF])\d{4}\s+(\d{2}:\d{2}:\d{2}\.\d+)\s+"
         r"(\d+)\s+([\w\.]+):(\d+)\]\s*(.*)$"
     )
     
     # Structured log format (JSON)
-    _json_keys = ["ts", "level", "msg", "logger", "caller"]
+    _json_keys = {"ts", "msg"}
     
     def match(self, line: str) -> bool:
         stripped = line.strip()
         
         # Check for klog format
-        if re.match(r"^[IWDVE]\d{4}\s+\d{2}:\d{2}:\d{2}", stripped):
+        if self._klog_pattern.match(stripped):
             return True
         
         # Check for JSON structured log
         if stripped.startswith("{") and stripped.endswith("}"):
             try:
                 data = json.loads(stripped)
-                # Check if it has k8s specific fields
-                if any(k in data for k in self._json_keys) or "pod" in data or "namespace" in data:
+                if "pod" in data or "namespace" in data:
                     return True
+                return self._json_keys <= data.keys() and ("caller" in data or "logger" in data)
             except json.JSONDecodeError:
                 pass
         
@@ -52,7 +52,8 @@ class KubernetesParser:
                 "W": "WARN", 
                 "D": "DEBUG",
                 "V": "DEBUG",
-                "E": "ERROR"
+                "E": "ERROR",
+                "F": "CRITICAL",
             }
             level = level_map.get(level_char, "INFO")
             

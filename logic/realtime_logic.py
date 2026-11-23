@@ -1,8 +1,9 @@
 from realtimeparser import start_mc_realtime
 
-def iterate_realtime(path: str, dangers: dict):
+
+def iterate_realtime(path: str, dangers: dict, stop_event=None):
     i = 1
-    for parsed in start_mc_realtime(path):
+    for parsed in start_mc_realtime(path, stop_event):
 
         level = parsed["level"].strip().upper()
         is_danger = dangers.get(level, False)

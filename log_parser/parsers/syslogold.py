@@ -7,6 +7,8 @@ MONTHS = {
 }
 
 class SyslogOldParser:
+    priority = -100
+
     def match(self, line):
         return bool(re.match(r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}", line))
 

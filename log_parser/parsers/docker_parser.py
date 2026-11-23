@@ -5,16 +5,20 @@ Or JSON format from docker log driver
 """
 import re
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 
 class DockerParser:
     """Parser for Docker container logs."""
+
+    # The json-file envelope and stream marker take precedence over JSON metadata.
+    priority = 10
     
     # Standard docker timestamp format: 2024-01-15T10:30:45.123456789Z
     _pattern = re.compile(
         r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s+"  # timestamp
-        r"([a-zA-Z0-9_\-\.]+)\s+"  # container name/id
+        r"(?:container=(?P<name>[\w.-]+)\s+|(?P<id>[0-9a-f]{12}(?:[0-9a-f]{52})?)\s+|"
+        r"(?P<compose_name>[\w.-]+)\s+\|\s*)"  # explicit container name/id
         r"(.*)$"  # message
     )
     
@@ -27,8 +31,17 @@ class DockerParser:
     
     def match(self, line: str) -> bool:
         stripped = line.strip()
-        # Check for docker timestamp format at start
-        return bool(self._pattern.match(stripped) or self._stream_pattern.match(stripped))
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError:
+                return False
+            return (
+                isinstance(data.get("log"), str)
+                and data.get("stream") in ("stdout", "stderr")
+                and isinstance(data.get("time"), str)
+            )
+        return bool(self._stream_pattern.match(stripped) or self._pattern.match(stripped))
     
     def parse(self, line: str) -> Dict[str, Any]:
         raw = line.strip()
@@ -62,7 +75,8 @@ class DockerParser:
         # Try standard pattern
         m = self._pattern.match(raw)
         if m:
-            timestamp, container, message = m.groups()
+            timestamp, name, container_id, compose_name, message = m.groups()
+            container = name or container_id or compose_name
             
             # Parse timestamp
             if "T" in timestamp:
@@ -118,17 +132,19 @@ class DockerParser:
         timestamp = data.get("time", data.get("timestamp", "N"))
         
         # Parse timestamp
-        if timestamp != "N" and "T" in timestamp:
-            date_part = timestamp.split("T")[0]
-            time_part = timestamp.split("T")[1].rstrip("Z")
+        date_part, separator, time_part = str(timestamp).partition("T")
+        if separator:
+            time_part = time_part.rstrip("Z")
         else:
-            date_part = "N"
-            time_part = "N"
+            date_part = time_part = "N"
         
         # Stream type
         stream = data.get("stream", "N")
         level = "ERROR" if stream == "stderr" else self._detect_level(log)
         
+        container = data.get("container")
+        source = container.get("name", "docker") if isinstance(container, dict) else container or "docker"
+
         return {
             "format": "docker_json",
             "raw": raw,
@@ -136,7 +152,7 @@ class DockerParser:
             "time": time_part,
             "timestamp": timestamp,
             "level": level,
-            "source": data.get("container", {}).get("name", "docker"),
+            "source": source,
             "module": stream,
             "thread": "N",
             "ids": [],

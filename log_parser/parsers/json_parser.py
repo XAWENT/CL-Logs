@@ -3,6 +3,8 @@ import json
 from typing import Any, Dict
 
 class JSONParser:
+    priority = -100
+
     def match(self, line: str) -> bool:
         text = line.strip()
         return text.startswith("{") and text.endswith("}")
@@ -15,6 +17,7 @@ class JSONParser:
             raise ValueError("JSON root is not an object")
 
         return {
+            **data,
             "format": "json",
             "raw": raw,
 
@@ -29,6 +32,4 @@ class JSONParser:
 
             "ids": data.get("ids", []),
             "message": data.get("message", raw),
-
-            **data
         }

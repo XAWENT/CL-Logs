@@ -1,24 +1,27 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox, simpledialog
-import os
 from pathlib import Path
 import threading
 import queue
 import re
-import json
 import requests
+from logic.notifications import (
+    NOTIFICATION_CONFIG,
+    NOTIFICATION_URL_REQUIRED,
+    load_config,
+    notification_url,
+    save_config,
+)
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
 from logic.settings import load_settings, save_settings, restoretodefaults
 
-BASE_URL = "http://94.183.235.102:5000"
-
-
 class LogAnalyzerApp:
     def __init__(self, root):
         self.root = root
-        root.tk.call('source', 'forest-light.tcl')
-        root.tk.call('source', 'forest-dark.tcl')
+        theme_dir = Path(__file__).resolve().parent
+        for theme in ('forest-light.tcl', 'forest-dark.tcl'):
+            root.tk.call('source', str(theme_dir / theme))
 
         self.current_theme = tk.StringVar(value="forest-light")
         self.style = ttk.Style()
@@ -33,12 +36,13 @@ class LogAnalyzerApp:
 
         self.dangers = load_settings()
 
-        self.user_config_path = "user_config.json"
-        self.user_hash = ""
-        self.notifications_enabled = False
+        self.user_config_path = NOTIFICATION_CONFIG
         self.load_user_config()
 
         self.log_queue = queue.Queue()
+        self._active_operation = None
+        self._queue_callback = None
+        self._closing = False
         self.realtime_running = False
 
         self.current_log_path = ""
@@ -47,52 +51,46 @@ class LogAnalyzerApp:
         self.display_to_original_map = {}
 
         self.create_widgets()
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.process_queue()
         self.apply_theme()
 
     def load_user_config(self):
-        if os.path.exists(self.user_config_path):
-            try:
-                with open(self.user_config_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                self.user_hash = data.get("user_hash", "")
-                self.notifications_enabled = bool(self.user_hash)
-            except Exception:
-                self.user_hash = ""
-                self.notifications_enabled = False
-        else:
-            self.user_hash = ""
-            self.notifications_enabled = False
+        self.user_hash, self.notifications_enabled = load_config(self.user_config_path)
 
-    def save_user_config(self):
-        data = {"user_hash": self.user_hash}
+    def save_user_config(self, user_hash, enabled):
         try:
-            with open(self.user_config_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось сохранить user_hash: {e}")
+            save_config(self.user_config_path, user_hash, enabled)
+        except OSError as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить настройки уведомлений: {e}")
+            return False
+        self.user_hash = user_hash
+        self.notifications_enabled = enabled
+        return True
 
-    def setup_notifications_gui(self):
-        if self.user_hash:
+    def can_send_notifications(self):
+        return bool(self.notifications_enabled and self.user_hash and notification_url())
+
+    def setup_notifications_gui(self, *, change_hash=False):
+        base_url = notification_url()
+        if not base_url:
+            messagebox.showinfo("Уведомления", NOTIFICATION_URL_REQUIRED)
+            return False
+
+        if self.user_hash and not change_hash:
             answer = messagebox.askyesno(
                 "Настройка уведомлений",
                 f"Найден сохранённый user_hash: {self.user_hash}\nИспользовать его?"
             )
             if answer:
-                self.notifications_enabled = True
-                self.save_user_config()
-                return True
+                return self.save_user_config(self.user_hash, True)
 
         while True:
             new_hash = simpledialog.askstring(
                 "User hash",
-                "Введите ваш user_hash (или оставьте пустым для отключения уведомлений):"
+                "Введите ваш user_hash (или оставьте поле пустым для отмены):"
             )
             if new_hash is None or new_hash.strip() == "":
-                self.user_hash = ""
-                self.notifications_enabled = False
-                self.save_user_config()
-                messagebox.showinfo("Уведомления", "Уведомления отключены.")
                 return False
 
             new_hash = new_hash.strip().upper()
@@ -101,7 +99,7 @@ class LogAnalyzerApp:
                 continue
 
             try:
-                resp = requests.get(f"{BASE_URL}/", timeout=3)
+                resp = requests.get(f"{base_url}/", timeout=3)
                 if resp.status_code != 200:
                     messagebox.showerror("Ошибка", "Сервер недоступен. Проверьте соединение.")
                     if not messagebox.askyesno("Повторить", "Попробовать снова?"):
@@ -113,12 +111,11 @@ class LogAnalyzerApp:
                     "message": "🔧 Тестовая проверка системы уведомлений\n✅ Соединение установлено",
                     "level": "INFO"
                 }
-                response = requests.post(f"{BASE_URL}/send", json=test_data, timeout=5)
+                response = requests.post(f"{base_url}/send", json=test_data, timeout=5)
                 if response.status_code == 200:
-                    self.user_hash = new_hash
-                    self.notifications_enabled = True
-                    self.save_user_config()
                     user_data = response.json().get('user', {})
+                    if not self.save_user_config(new_hash, True):
+                        return False
                     messagebox.showinfo(
                         "Успех",
                         f"Настройка завершена!\nПользователь: {user_data.get('first_name', 'Unknown')}"
@@ -139,17 +136,19 @@ class LogAnalyzerApp:
                     return False
 
     def send_notification(self, level, message, source, timestamp=""):
-        if not self.notifications_enabled or not self.user_hash:
+        base_url = notification_url()
+        user_hash = self.user_hash
+        if not self.notifications_enabled or not user_hash or not base_url:
             return False
 
         try:
             tg_message = f"⚠️ {level}\n📝 Сообщение: {message}"
             send_data = {
-                "user_hash": self.user_hash,
+                "user_hash": user_hash,
                 "message": tg_message.strip(),
                 "level": level
             }
-            response = requests.post(f"{BASE_URL}/send", json=send_data, timeout=10)
+            response = requests.post(f"{base_url}/send", json=send_data, timeout=10)
 
             if response.status_code != 200:
                 return False
@@ -169,11 +168,12 @@ class LogAnalyzerApp:
 ⚠️ Требуется немедленное вмешательство!
 """
                 email_data = {
-                    "user_hash": self.user_hash,
+                    "user_hash": user_hash,
                     "subject": email_subject,
                     "message": email_message.strip()
                 }
-                requests.post(f"{BASE_URL}/send_email", json=email_data, timeout=10)
+                response = requests.post(f"{base_url}/send_email", json=email_data, timeout=10)
+                return response.status_code == 200
 
             return True
         except Exception:
@@ -198,45 +198,43 @@ class LogAnalyzerApp:
         main = ttk.Frame(win, padding=10)
         main.pack(fill=tk.BOTH, expand=True)
 
-        status = "Включены" if self.notifications_enabled else "Отключены"
+        available = bool(notification_url())
+        status = "Включены" if self.can_send_notifications() else "Отключены"
         ttk.Label(main, text=f"Статус: {status}").pack(anchor=tk.W, pady=5)
-        if self.notifications_enabled and self.user_hash:
+        if not available:
+            ttk.Label(main, text=NOTIFICATION_URL_REQUIRED, wraplength=360).pack(anchor=tk.W, pady=5)
+        if self.user_hash:
             ttk.Label(main, text=f"Хэш: {self.user_hash}").pack(anchor=tk.W, pady=5)
 
         def enable():
             if self.setup_notifications_gui():
-                self.notifications_enabled = True
                 self.update_stats_display()
                 messagebox.showinfo("Уведомления", "Уведомления включены.")
-            else:
-                self.notifications_enabled = False
             win.destroy()
 
         def disable():
-            self.user_hash = ""
-            self.notifications_enabled = False
-            self.save_user_config()
-            self.update_stats_display()
-            messagebox.showinfo("Уведомления", "Уведомления отключены.")
-            win.destroy()
+            if self.save_user_config(self.user_hash, False):
+                self.update_stats_display()
+                messagebox.showinfo("Уведомления", "Уведомления отключены.")
+                win.destroy()
 
         def change_hash():
-            if self.setup_notifications_gui():
-                self.notifications_enabled = True
+            if self.setup_notifications_gui(change_hash=True):
                 self.update_stats_display()
                 messagebox.showinfo("Успех", "Хэш обновлён.")
-            else:
-                self.notifications_enabled = False
             win.destroy()
 
         btn_frame = ttk.Frame(main)
         btn_frame.pack(fill=tk.X, pady=10)
+        setup_state = 'normal' if available else 'disabled'
 
         if self.notifications_enabled:
             ttk.Button(btn_frame, text="Отключить", command=disable).pack(side=tk.LEFT, padx=5)
-            ttk.Button(btn_frame, text="Сменить хэш", command=change_hash).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_frame, text="Сменить хэш", command=change_hash,
+                       state=setup_state).pack(side=tk.LEFT, padx=5)
         else:
-            ttk.Button(btn_frame, text="Включить", command=enable).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_frame, text="Включить", command=enable,
+                       state=setup_state).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(btn_frame, text="Закрыть", command=win.destroy).pack(side=tk.RIGHT, padx=5)
         win.protocol("WM_DELETE_WINDOW", win.destroy)
@@ -363,9 +361,8 @@ class LogAnalyzerApp:
 
         def save():
             new_hash = hash_var.get().strip()
-            self.user_hash = new_hash
-            self.notifications_enabled = bool(new_hash)
-            self.save_user_config()
+            if not self.save_user_config(new_hash, bool(new_hash) and self.notifications_enabled):
+                return
             self.update_stats_display()
             messagebox.showinfo("Сохранено", "User hash сохранён в user_config.json")
             win.destroy()
@@ -442,71 +439,77 @@ class LogAnalyzerApp:
             self.status_var.set(f"Выбран файл: {Path(path).name}")
 
     def start_realtime(self):
-        if not self.current_log_path:
-            messagebox.showwarning("Внимание", "Сначала выберите файл лога!")
-            return
-        self.realtime_running = True
-        self.realtime_btn.config(state='disabled')
-        self.analyze_btn.config(state='disabled')
-        self.stop_btn.config(state='normal')
-        self.parsed_entries.clear()
-        self.current_entries.clear()
-        self.display_to_original_map.clear()
-        self.entries_listbox.delete(0, tk.END)
-        self.detail_text.config(state='normal')
-        self.detail_text.delete(1.0, tk.END)
-        self.detail_text.config(state='disabled')
-        self.raw_text.config(state='normal')
-        self.raw_text.delete(1.0, tk.END)
-        self.raw_text.config(state='disabled')
-        self.status_var.set("Мониторинг в реальном времени запущен...")
-        threading.Thread(target=self.realtime_monitoring, daemon=True).start()
+        self._start_log_operation(
+            self.realtime_monitoring,
+            "Мониторинг в реальном времени запущен...",
+            realtime=True,
+        )
 
-    def realtime_monitoring(self):
+    def realtime_monitoring(self, operation, path, dangers):
         try:
-            for entry in iterate_realtime(self.current_log_path, self.dangers):
-                self.log_queue.put(("realtime_entry", entry))
-                if not self.realtime_running:
-                    break
+            for entry in iterate_realtime(path, dangers, stop_event=operation):
+                if operation.is_set():
+                    return
+                self.log_queue.put((operation, "entry", entry))
         except Exception as e:
-            self.log_queue.put(("error", str(e)))
+            self.log_queue.put((operation, "error", str(e)))
+        else:
+            self.log_queue.put((operation, "realtime_finished", None))
 
     def stop_realtime(self):
+        if not self.realtime_running:
+            return
+        self._active_operation.set()
+        self._finish_log_operation()
+        self.status_var.set("Мониторинг остановлен")
+
+    def _finish_log_operation(self):
+        self._active_operation = None
         self.realtime_running = False
         self.realtime_btn.config(state='normal')
         self.analyze_btn.config(state='normal')
         self.stop_btn.config(state='disabled')
-        self.status_var.set("Мониторинг остановлен")
 
     def analyze_log(self):
+        self._start_log_operation(self.run_analysis, "Выполняется анализ лога...")
+
+    def _start_log_operation(self, worker, status, *, realtime=False):
+        if self._closing or self._active_operation is not None:
+            return
         if not self.current_log_path:
             messagebox.showwarning("Внимание", "Сначала выберите файл лога!")
             return
-        self.parsed_entries.clear()
-        self.current_entries.clear()
-        self.display_to_original_map.clear()
-        self.entries_listbox.delete(0, tk.END)
-        self.detail_text.config(state='normal')
-        self.detail_text.delete(1.0, tk.END)
-        self.detail_text.config(state='disabled')
-        self.raw_text.config(state='normal')
-        self.raw_text.delete(1.0, tk.END)
-        self.raw_text.config(state='disabled')
-        self.status_var.set("Выполняется анализ лога...")
-        threading.Thread(target=self.run_analysis, daemon=True).start()
-
-    def run_analysis(self):
+        operation = threading.Event()
+        self._active_operation = operation
+        self.realtime_running = realtime
+        self.realtime_btn.config(state='disabled')
+        self.analyze_btn.config(state='disabled')
+        self.stop_btn.config(state='normal' if realtime else 'disabled')
+        self.clear_entries()
+        self.status_var.set(status)
         try:
-            entries, danger_lines = analyze_log(self.current_log_path, self.dangers)
+            threading.Thread(
+                target=worker,
+                args=(operation, self.current_log_path, self.dangers.copy()),
+                daemon=True,
+            ).start()
+        except RuntimeError as e:
+            self.log_queue.put((operation, "error", str(e)))
+
+    def run_analysis(self, operation, path, dangers):
+        try:
+            entries, danger_lines = analyze_log(path, dangers)
             for entry in entries:
-                self.log_queue.put(("analysis_entry", entry))
-            self.log_queue.put(("stats", {
+                if operation.is_set():
+                    return
+                self.log_queue.put((operation, "entry", entry))
+            self.log_queue.put((operation, "stats", {
                 'total': len(entries),
-                'danger': len([e for e in entries if e["is_danger"]]),
+                'danger': len(danger_lines),
                 'danger_lines': danger_lines
             }))
         except Exception as e:
-            self.log_queue.put(("error", str(e)))
+            self.log_queue.put((operation, "error", str(e)))
 
     def open_settings(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -565,19 +568,41 @@ class LogAnalyzerApp:
         ttk.Button(button_frame, text="Отмена", command=on_closing).pack(side=tk.RIGHT, padx=5)
 
     def process_queue(self):
-        try:
-            while True:
-                msg_type, data = self.log_queue.get_nowait()
-                if msg_type in ["realtime_entry", "analysis_entry"]:
-                    self.add_entry(data)
-                elif msg_type == "error":
-                    self.status_var.set(f"Ошибка: {data}")
-                    messagebox.showerror("Ошибка", str(data))
-                elif msg_type == "stats":
-                    self.update_stats_display(data)
-        except queue.Empty:
-            pass
-        self.root.after(100, self.process_queue)
+        self._queue_callback = None
+        delay = 1
+        for _ in range(100):
+            if self._closing:
+                return
+            try:
+                operation, msg_type, data = self.log_queue.get_nowait()
+            except queue.Empty:
+                delay = 100
+                break
+            if operation is not self._active_operation:
+                continue
+            if msg_type == "entry":
+                self.add_entry(data)
+            elif msg_type == "error":
+                self._finish_log_operation()
+                self.status_var.set(f"Ошибка: {data}")
+                messagebox.showerror("Ошибка", data)
+            elif msg_type == "stats":
+                self._finish_log_operation()
+                self.update_stats_display(data)
+            elif msg_type == "realtime_finished":
+                self._finish_log_operation()
+                self.status_var.set("Мониторинг завершен")
+        if not self._closing:
+            self._queue_callback = self.root.after(delay, self.process_queue)
+
+    def close(self):
+        self._closing = True
+        if self._active_operation is not None:
+            self._active_operation.set()
+            self._active_operation = None
+        if self._queue_callback is not None:
+            self.root.after_cancel(self._queue_callback)
+        self.root.destroy()
 
     def add_entry(self, entry):
         self.parsed_entries.append(entry)
@@ -598,7 +623,7 @@ class LogAnalyzerApp:
             self.entries_listbox.itemconfig(tk.END, {'fg': color})
         self.update_count_label()
 
-        if entry["is_danger"] and self.notifications_enabled and self.user_hash:
+        if entry["is_danger"] and self.can_send_notifications():
             timestamp = f"{entry['date']} {entry['time']}" if entry["date"] != "N" else entry["time"]
             threading.Thread(target=self.send_notification,
                              args=(entry["level"], entry["message"], entry["source"], timestamp),
@@ -714,7 +739,12 @@ class LogAnalyzerApp:
                 text += f"\nТекущая сессия:\nВсего записей: {len(self.parsed_entries)}\nОпасных: {danger_cnt}\nБезопасных: {len(self.parsed_entries)-danger_cnt}\n"
                 if len(self.parsed_entries):
                     text += f"Процент опасных: {(danger_cnt/len(self.parsed_entries)*100):.1f}%\n"
-            text += f"\n🔔 Уведомления: {'ВКЛ (' + self.user_hash[:8] + '...)' if self.notifications_enabled else 'ВЫКЛ'}"
+            if self.can_send_notifications():
+                text += f"\n🔔 Уведомления: ВКЛ ({self.user_hash[:8]}...)"
+            else:
+                text += "\n🔔 Уведомления: ВЫКЛ"
+                if not notification_url():
+                    text += f". {NOTIFICATION_URL_REQUIRED}"
             self.stats_text.insert(1.0, text)
         self.stats_text.config(state='disabled')
 

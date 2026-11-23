@@ -10,11 +10,6 @@ from typing import Dict, Any
 class AWSCloudWatchParser:
     """Parser for AWS CloudWatch Logs."""
     
-    # CloudWatch embedded metric format
-    _embedded_pattern = re.compile(
-        r"^\{.*\"@timestamp\".*\}$"
-    )
-    
     # Standard CloudWatch: 2024-01-15T10:30:45.123Z message
     _timestamp_pattern = re.compile(
         r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s+(.*)$"
@@ -23,9 +18,10 @@ class AWSCloudWatchParser:
     # AWS service specific patterns
     _lambda_pattern = re.compile(
         r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s+"
-        r"(\w+)\s+"  # request ID
-        r"(\w+)\s+"  # level
-        r"(.*)$"
+        r"([\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12})\s+"
+        r"(TRACE|DEBUG|INFO|NOTICE|WARN(?:ING)?|ERROR|CRITICAL|FATAL)\s+"
+        r"(.*)$",
+        re.IGNORECASE,
     )
     
     def match(self, line: str) -> bool:
@@ -35,17 +31,17 @@ class AWSCloudWatchParser:
         if stripped.startswith("{") and stripped.endswith("}"):
             try:
                 data = json.loads(stripped)
-                # Check for CloudWatch fields
-                if "@timestamp" in data or "timestamp" in data or "time" in data:
+                if (
+                    {"@timestamp", "@message"} <= data.keys()
+                    or {"requestId", "timestamp", "level", "message"} <= data.keys()
+                    or {"request_id", "timestamp", "level", "message"} <= data.keys()
+                    or any(key in data for key in ("_aws", "log_group", "function_name"))
+                ):
                     return True
             except json.JSONDecodeError:
                 pass
         
-        # Check for timestamp format
-        if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", stripped):
-            return True
-        
-        return False
+        return bool(self._lambda_pattern.match(stripped))
     
     def parse(self, line: str) -> Dict[str, Any]:
         raw = line.strip()
@@ -63,7 +59,7 @@ class AWSCloudWatchParser:
         if m:
             timestamp, request_id, level, message = m.groups()
             
-            return self._build_result(timestamp, level, message, "lambda", request_id)
+            return self._build_result(raw, timestamp, level, message, "lambda", request_id)
         
         # Try standard timestamp format
         m = self._timestamp_pattern.match(raw)
@@ -73,7 +69,7 @@ class AWSCloudWatchParser:
             # Detect level from message
             level = self._detect_level(message)
             
-            return self._build_result(timestamp, level, message, "cloudwatch", "N")
+            return self._build_result(raw, timestamp, level, message, "cloudwatch", "N")
         
         # Fallback
         return {
@@ -93,7 +89,9 @@ class AWSCloudWatchParser:
     def _parse_json_format(self, data: Dict, raw: str) -> Dict[str, Any]:
         """Parse JSON format from CloudWatch."""
         # Get timestamp
-        timestamp = data.get("@timestamp", data.get("timestamp", data.get("time", "N")))
+        aws = data.get("_aws")
+        metric_timestamp = aws.get("Timestamp", "N") if isinstance(aws, dict) else "N"
+        timestamp = data.get("@timestamp", data.get("timestamp", data.get("time", metric_timestamp)))
         
         # Parse timestamp
         if timestamp != "N" and "T" in str(timestamp):
@@ -116,7 +114,7 @@ class AWSCloudWatchParser:
             level = "DEBUG"
         
         # Get message
-        message = data.get("message", data.get("msg", raw))
+        message = data.get("message", data.get("@message", data.get("msg", raw)))
         
         # Get source
         source = data.get("source", data.get("service", "aws"))
@@ -124,14 +122,14 @@ class AWSCloudWatchParser:
         # Extract AWS-specific fields
         result = {
             "format": "aws_cloudwatch_json",
-            "raw": message if isinstance(message, str) else raw,
+            "raw": raw,
             "date": date_part,
             "time": time_part,
             "timestamp": str(timestamp),
             "level": level,
             "source": source,
             "module": data.get("function_name", "N"),
-            "thread": data.get("request_id", "N"),
+            "thread": data.get("request_id", data.get("requestId", "N")),
             "ids": [],
             "message": message
         }
@@ -146,7 +144,7 @@ class AWSCloudWatchParser:
         
         return result
     
-    def _build_result(self, timestamp: str, level: str, message: str,
+    def _build_result(self, raw: str, timestamp: str, level: str, message: str,
                      source: str, request_id: str) -> Dict[str, Any]:
         """Build standardized result."""
         # Parse timestamp
@@ -159,7 +157,7 @@ class AWSCloudWatchParser:
         
         return {
             "format": "aws_cloudwatch",
-            "raw": message,
+            "raw": raw,
             "date": date_part,
             "time": time_part,
             "timestamp": timestamp,

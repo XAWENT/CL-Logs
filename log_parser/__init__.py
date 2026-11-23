@@ -19,8 +19,9 @@ Each parser plugin must define a class that implements two methods:
 ``parse(self, line: str) -> dict``
     Return a structured representation of ``line``.
 
-The framework will call `match` in order on the list of registered
-parsers. The first parser whose `match` returns True for a given line
+Plugins can give their parser an integer `priority` (default 0).
+Discovery orders parsers by descending priority, then by module
+and class name. The first parser whose `match` returns True for a given line
 gets to parse it. If none match, the generic fallback parser is
 invoked to extract whatever information it can.
 

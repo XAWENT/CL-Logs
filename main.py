@@ -1,51 +1,54 @@
+import sys
+
 from menu import menu
 from colors import C
-import os
-import json
 import requests
 
+from logic.notifications import (
+    NOTIFICATION_CONFIG,
+    NOTIFICATION_URL_REQUIRED,
+    load_config,
+    notification_url,
+    save_config,
+)
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
 from logic.settings import load_settings, save_settings, restoretodefaults
 
-BASE_URL = "http://94.183.235.102:5000"
-
 
 def check_notifications_status():
-    user_hash = None
-    notifications_enabled = False
+    user_hash, enabled = load_config(NOTIFICATION_CONFIG)
+    return user_hash or None, enabled and bool(notification_url())
 
+
+def save_notification_settings(user_hash, enabled):
     try:
-        if os.path.exists("user_config.json"):
-            with open("user_config.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-                user_hash = data.get("user_hash")
-                if user_hash:
-                    notifications_enabled = True
-    except:
-        pass
-
-    return user_hash, notifications_enabled
+        save_config(NOTIFICATION_CONFIG, user_hash, enabled)
+    except OSError as e:
+        print(C.R + f"❌ Не удалось сохранить настройки уведомлений: {e}" + C.RESET)
+        return False
+    return True
 
 
-def setup_notifications():
+def setup_notifications(*, change_hash=False):
     print(C.C + "\n" + "═" * 50 + C.RESET)
     print(C.C + "         НАСТРОЙКА СИСТЕМЫ УВЕДОМЛЕНИЙ" + C.RESET)
     print(C.C + "═" * 50 + C.RESET + "\n")
 
-    saved_hash = None
-    try:
-        if os.path.exists("user_config.json"):
-            with open("user_config.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-                saved_hash = data.get("user_hash")
-                if saved_hash:
-                    print(C.Y + f"📋 Найден сохраненный user_hash: {saved_hash}" + C.RESET)
-                    use_saved = input(C.Y + "Использовать его? (y/n): " + C.RESET).lower()
-                    if use_saved == 'y':
-                        return saved_hash, True
-    except:
-        pass
+    base_url = notification_url()
+    saved_hash, enabled = load_config(NOTIFICATION_CONFIG)
+    current_status = saved_hash or None, enabled and bool(base_url)
+    if not base_url:
+        print(C.Y + NOTIFICATION_URL_REQUIRED + C.RESET)
+        return current_status
+
+    if saved_hash and not change_hash:
+        print(C.Y + f"📋 Найден сохраненный user_hash: {saved_hash}" + C.RESET)
+        use_saved = input(C.Y + "Использовать его? (y/n): " + C.RESET).lower()
+        if use_saved == "y":
+            if save_notification_settings(saved_hash, True):
+                return saved_hash, True
+            return current_status
 
     while True:
         print(C.W + "📝 Для отправки уведомлений нужен ваш user_hash." + C.RESET)
@@ -54,8 +57,7 @@ def setup_notifications():
         user_hash = input(C.Y + "Введите ваш user_hash (или Enter для пропуска): " + C.RESET).strip().upper()
 
         if not user_hash:
-            print(C.Y + "🔕 Уведомления отключены." + C.RESET)
-            return None, False
+            return current_status
 
         if len(user_hash) < 8:
             print(C.R + "❌ Хэш слишком короткий. Минимум 8 символов." + C.RESET)
@@ -63,12 +65,12 @@ def setup_notifications():
 
         print(C.C + "\n🔍 Проверяем соединение с сервером..." + C.RESET)
         try:
-            health_response = requests.get(f"{BASE_URL}/", timeout=3)
+            health_response = requests.get(f"{base_url}/", timeout=3)
             if health_response.status_code != 200:
-                print(C.R + "❌ Сервер недоступен. Проверьте запущен ли сервер на порту 5000." + C.RESET)
+                print(C.R + "❌ Сервер недоступен. Проверьте адрес сервера и соединение." + C.RESET)
                 retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
                 if retry != 'y':
-                    return None, False
+                    return current_status
                 continue
 
             test_data = {
@@ -78,20 +80,16 @@ def setup_notifications():
             }
 
             response = requests.post(
-                f"{BASE_URL}/send",
+                f"{base_url}/send",
                 headers={"Content-Type": "application/json"},
                 json=test_data,
                 timeout=5
             )
 
             if response.status_code == 200:
-                try:
-                    with open("user_config.json", "w", encoding="utf-8") as f:
-                        json.dump({"user_hash": user_hash}, f)
-                except:
-                    pass
-
                 user_data = response.json().get('user', {})
+                if not save_notification_settings(user_hash, True):
+                    return current_status
                 print(C.G + f"\n✅ Настройка завершена успешно!" + C.RESET)
                 print(C.C + f"👤 Пользователь: {user_data.get('first_name', 'Unknown')}" + C.RESET)
                 return user_hash, True
@@ -107,24 +105,25 @@ def setup_notifications():
             print(C.R + "❌ Не удалось подключиться к серверу." + C.RESET)
             retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
             if retry != 'y':
-                return None, False
+                return current_status
             continue
         except requests.exceptions.Timeout:
             print(C.R + "⏰ Таймаут при подключении к серверу." + C.RESET)
             retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
             if retry != 'y':
-                return None, False
+                return current_status
             continue
         except Exception as e:
             print(C.R + f"❌ Ошибка: {str(e)}" + C.RESET)
             retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
             if retry != 'y':
-                return None, False
+                return current_status
             continue
 
 
 def send_notification(level, message, source, timestamp="", user_hash=None):
-    if not user_hash:
+    base_url = notification_url()
+    if not base_url or not user_hash:
         return False
 
     try:
@@ -140,7 +139,7 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
         }
 
         response = requests.post(
-            f"{BASE_URL}/send",
+            f"{base_url}/send",
             headers={"Content-Type": "application/json"},
             json=send_data,
             timeout=10
@@ -171,7 +170,7 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
             }
 
             response = requests.post(
-                f"{BASE_URL}/send_email",
+                f"{base_url}/send_email",
                 headers={"Content-Type": "application/json"},
                 json=email_data,
                 timeout=10
@@ -186,6 +185,11 @@ def send_notification(level, message, source, timestamp="", user_hash=None):
 
 
 def main():
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from console_ui import LogConsole
+        LogConsole(send_notification).run()
+        return
+
     dangers = load_settings()
 
     user_hash, notifications_enabled = check_notifications_status()
@@ -200,7 +204,9 @@ def main():
             print(C.C + "       РЕЖИМ РЕАЛЬНОГО ВРЕМЕНИ" + C.RESET)
             print(C.C + "═" * 50 + C.RESET + "\n")
 
-            if not notifications_enabled:
+            if not notification_url():
+                print(C.Y + NOTIFICATION_URL_REQUIRED + C.RESET)
+            elif not notifications_enabled:
                 print(C.Y + "🔕 Уведомления отключены." + C.RESET)
                 setup_now = input(C.Y + "⚙ Настроить уведомления сейчас? (y/n): " + C.RESET).lower()
                 if setup_now == 'y':
@@ -273,7 +279,9 @@ def main():
             print(C.C + "          АНАЛИЗ ЛОГ-ФАЙЛА" + C.RESET)
             print(C.C + "═" * 50 + C.RESET + "\n")
 
-            if not notifications_enabled:
+            if not notification_url():
+                print(C.Y + NOTIFICATION_URL_REQUIRED + C.RESET)
+            elif not notifications_enabled:
                 print(C.Y + "🔕 Уведомления отключены." + C.RESET)
                 setup_now = input(C.Y + "⚙ Настроить уведомления сейчас? (y/n): " + C.RESET).lower()
                 if setup_now == 'y':
@@ -302,11 +310,11 @@ def main():
                 if entry["level"] == "ERROR":
                     icon = "❌"
                     color = C.R
-                    error_count += 1 if entry["is_danger"] else 0
+                    error_count += 1
                 elif entry["level"] == "WARN":
                     icon = "⚠️"
                     color = C.Y
-                    warn_count += 1 if entry["is_danger"] else 0
+                    warn_count += 1
                 else:
                     icon = "ℹ️"
                     color = C.W if entry["is_danger"] else C.G
@@ -369,7 +377,9 @@ def main():
         elif choice == "3":
             print(C.W + f"\n🔧 Текущие уровни опасности: {', '.join(truedangers)}" + C.RESET)
 
-            if notifications_enabled and user_hash:
+            if not notification_url():
+                print(C.Y + "🔕 Уведомления: ВЫКЛ. " + NOTIFICATION_URL_REQUIRED + C.RESET)
+            elif notifications_enabled and user_hash:
                 print(C.G + f"🔔 Уведомления: ВКЛ (хэш: {user_hash[:8]}...)" + C.RESET)
             else:
                 print(C.Y + "🔕 Уведомления: ВЫКЛ" + C.RESET)
@@ -409,36 +419,35 @@ def main():
                 print(C.C + "    НАСТРОЙКИ УВЕДОМЛЕНИЙ" + C.RESET)
                 print(C.C + "═" * 40 + C.RESET + "\n")
 
-                if notifications_enabled and user_hash:
-                    print(C.G + f"🔔 Уведомления включены" + C.RESET)
+                available = bool(notification_url())
+                _, enabled_preference = load_config(NOTIFICATION_CONFIG)
+                if not available:
+                    print(C.Y + "🔕 Уведомления отключены. " + NOTIFICATION_URL_REQUIRED + C.RESET)
+
+                if enabled_preference and user_hash:
+                    if available:
+                        print(C.G + "🔔 Уведомления включены" + C.RESET)
                     print(C.C + f"🔑 Хэш: {user_hash}" + C.RESET)
                     print("\nВыберите действие:")
-                    print(C.Y + "1)" + C.W + " Изменить user_hash")
+                    if available:
+                        print(C.Y + "1)" + C.W + " Изменить user_hash")
                     print(C.Y + "2)" + C.W + " Отключить уведомления")
                     print(C.Y + "3)" + C.W + " Назад")
 
                     notify_choice = input(C.Y + "\nВыберите пункт: " + C.RESET)
 
-                    if notify_choice == "1":
-                        new_hash, enabled = setup_notifications()
-                        if enabled:
-                            user_hash = new_hash
-                            notifications_enabled = True
+                    if notify_choice == "1" and available:
+                        previous_hash = user_hash
+                        user_hash, notifications_enabled = setup_notifications(change_hash=True)
+                        if user_hash != previous_hash:
                             print(C.G + "\n✅ Хэш обновлен!" + C.RESET)
-                        else:
+                        input(C.Y + "\n⏎ Нажмите Enter..." + C.RESET)
+                    elif notify_choice == "2":
+                        if save_notification_settings(user_hash, False):
                             notifications_enabled = False
                             print(C.Y + "\n🔕 Уведомления отключены" + C.RESET)
                         input(C.Y + "\n⏎ Нажмите Enter..." + C.RESET)
-                    elif notify_choice == "2":
-                        notifications_enabled = False
-                        try:
-                            if os.path.exists("user_config.json"):
-                                os.remove("user_config.json")
-                        except:
-                            pass
-                        print(C.Y + "\n🔕 Уведомления отключены" + C.RESET)
-                        input(C.Y + "\n⏎ Нажмите Enter..." + C.RESET)
-                else:
+                elif available:
                     print(C.Y + "🔕 Уведомления отключены" + C.RESET)
                     print("\nВыберите действие:")
                     print(C.Y + "1)" + C.W + " Включить уведомления")
@@ -447,6 +456,8 @@ def main():
                     notify_choice = input(C.Y + "\nВыберите пункт: " + C.RESET)
                     if notify_choice == "1":
                         user_hash, notifications_enabled = setup_notifications()
+                else:
+                    input(C.Y + "\n⏎ Нажмите Enter..." + C.RESET)
 
         elif choice == "4":
             print(C.W + "\n👋 До свидания!" + C.RESET)

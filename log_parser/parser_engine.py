@@ -1,6 +1,9 @@
 from __future__ import annotations
-import os
 import importlib
+import json
+import os
+import typing
+
 from log_parser.fallback import fallback_parse
 
 
@@ -68,12 +71,23 @@ def normalize(parsed: dict):
     out = {}
 
     for key, default in STANDARD_FIELDS.items():
-        out[key] = parsed.get(key, default)
+        if key == "ids":
+            continue
+        value = parsed.get(key)
+        if value is None:
+            value = default
+        elif isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        elif not isinstance(value, str):
+            value = str(value)
+        out[key] = value
 
-    out["level"] = normalize_level(out.get("level"), str(out.get("message", "")))
+    out["level"] = normalize_level(out["level"], out["message"])
 
-    if not isinstance(out["ids"], list):
-        out["ids"] = [out["ids"]]
+    ids = parsed.get("ids")
+    if ids is None:
+        ids = []
+    out["ids"] = ids if isinstance(ids, list) else [ids]
 
     return out
 
@@ -89,7 +103,7 @@ def _load_parsers():
     base = os.path.dirname(__file__)
     pars_dir = os.path.join(base, "parsers")
 
-    for fname in os.listdir(pars_dir):
+    for fname in sorted(os.listdir(pars_dir)):
         if fname.endswith(".py") and not fname.startswith("_"):
 
             modname = fname[:-3]
@@ -97,8 +111,6 @@ def _load_parsers():
 
             for attr in dir(module):
                 obj = getattr(module, attr)
-                import typing
-
                 if isinstance(obj, type):
 
                     if obj in (str, int, float, list, dict, tuple, set, type, object):
@@ -115,18 +127,21 @@ def _load_parsers():
                     if hasattr(instance, "match") and hasattr(instance, "parse"):
                         parsers.append(instance)
 
+    # Python's stable sort keeps module and class discovery order for ties.
+    parsers.sort(key=lambda parser: getattr(parser, "priority", 0), reverse=True)
     _parsers_cache = parsers
     return parsers
 
 def parse_line(line: str):
-    line = line.rstrip("\n")
+    line = line.rstrip("\r\n")
     parsers = _load_parsers()
 
     for parser in parsers:
         try:
             if parser.match(line):
-                parsed = parser.parse(line)
-                return normalize(parsed)
+                entry = normalize(parser.parse(line))
+                entry["raw"] = line
+                return entry
         except Exception as e:
             return normalize({
                 "format": "parser_error",
@@ -135,7 +150,9 @@ def parse_line(line: str):
                 "message": f"Parser crashed: {e}",
             })
 
-    return normalize(fallback_parse(line))
+    entry = normalize(fallback_parse(line))
+    entry["raw"] = line
+    return entry
 
 
 def parse_file(path: str):

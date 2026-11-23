@@ -8,22 +8,33 @@ from typing import Dict, Any
 
 class MySQLParser:
     """Parser for MySQL/MariaDB database logs."""
+
+    _iso_timestamp = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+    _severity = r"Note|System|Info(?:rmational)?|Warning|Warn|Error|Fatal|Debug"
     
     # MySQL error log format: YYYY-MM-DDTHH:MM:SS.ssssss [Note/Error/Warning] message
     _error_pattern = re.compile(
-        r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]?\d*)\s+"  # timestamp
-        r"\[(\w+)\]\s+"  # level: Note, Error, Warning
+        rf"^({_iso_timestamp})\s+"
+        rf"\[({_severity})\]\s+"
         r"(?:(\d+)\s+)?"  # optional thread ID
-        r"(.*)$"  # message
+        r"(.*)$",
+        re.IGNORECASE,
     )
     
     # MySQL 8.0+ format
     _error_v8_pattern = re.compile(
-        r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[ZT+-]*)\s+"  # timestamp
+        rf"^({_iso_timestamp})\s+"
         r"(\d+)\s+"  # thread ID
-        r"(\w+)\s+"  # level
-        r"\[(\w+)\]\s+"  # subsystem
-        r"(.*)$"  # message
+        rf"(?:\[({_severity})\]|({_severity}))\s+"
+        r"(?:\[MY-\d+\]\s+)?"
+        r"\[([\w.-]+)\]\s+"
+        r"(.*)$",
+        re.IGNORECASE,
+    )
+
+    _thread_note_pattern = re.compile(
+        rf"^({_iso_timestamp})\s+(\d+)\s+\[(Note|Warning|Error)\]\s+(.*)$",
+        re.IGNORECASE,
     )
     
     # Simple error format
@@ -44,12 +55,17 @@ class MySQLParser:
     def match(self, line: str) -> bool:
         stripped = line.strip()
 
-        return bool(
-            re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", stripped) or
-            self._mariadb_pattern.match(stripped) or
-            re.match(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\[(?:\w+)\]", stripped) or
-            re.match(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\w+:\s+", stripped)
-        )
+        if (
+            self._error_v8_pattern.match(stripped)
+            or self._thread_note_pattern.match(stripped)
+            or self._mariadb_pattern.match(stripped)
+        ):
+            return True
+        legacy = self._error_pattern.match(stripped)
+        if legacy:
+            return legacy.group(2).lower() == "note" or legacy.group(3) is not None
+        simple = self._simple_pattern.match(stripped)
+        return bool(simple and simple.group(2).lower() == "note")
     
     def parse(self, line: str) -> Dict[str, Any]:
         raw = line.strip()
@@ -57,26 +73,31 @@ class MySQLParser:
         # Try v8 format first
         m = self._error_v8_pattern.match(raw)
         if m:
-            timestamp, thread_id, level, subsystem, message = m.groups()
-            return self._build_result(timestamp, level, message, thread_id, subsystem)
+            timestamp, thread_id, bracketed_level, bare_level, subsystem, message = m.groups()
+            return self._build_result(raw, timestamp, bracketed_level or bare_level, message, thread_id, subsystem)
+
+        m = self._thread_note_pattern.match(raw)
+        if m:
+            timestamp, thread_id, level, message = m.groups()
+            return self._build_result(raw, timestamp, level, message, thread_id, "N")
         
         # Try MariaDB format
         m = self._mariadb_pattern.match(raw)
         if m:
             timestamp, level, thread_id, source, message = m.groups()
-            return self._build_result(timestamp, level, message, thread_id, source)
+            return self._build_result(raw, timestamp, level, message, thread_id, source)
         
         # Try main error pattern
         m = self._error_pattern.match(raw)
         if m:
             timestamp, level, thread_id, message = m.groups()
-            return self._build_result(timestamp, level, message, thread_id, "N")
+            return self._build_result(raw, timestamp, level, message, thread_id, "N")
         
         # Try simple pattern
         m = self._simple_pattern.match(raw)
         if m:
             timestamp, level, message = m.groups()
-            return self._build_result(timestamp, level, message, None, "N")
+            return self._build_result(raw, timestamp, level, message, None, "N")
         
         # Fallback
         return {
@@ -93,7 +114,7 @@ class MySQLParser:
             "message": raw
         }
     
-    def _build_result(self, timestamp: str, level: str, message: str,
+    def _build_result(self, raw: str, timestamp: str, level: str, message: str,
                      thread_id: str | None, subsystem: str) -> Dict[str, Any]:
         """Build standardized result."""
         # Parse timestamp
@@ -112,13 +133,14 @@ class MySQLParser:
             "WARNING": "WARN",
             "WARN": "WARN",
             "NOTE": "INFO",
+            "SYSTEM": "INFO",
             "INFORMATIONAL": "INFO"
         }
         level = level_map.get(level, level)
         
         result = {
             "format": "mysql",
-            "raw": message if isinstance(message, str) else raw,
+            "raw": raw,
             "date": date_part,
             "time": time_part,
             "timestamp": timestamp,

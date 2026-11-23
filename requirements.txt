@@ -1,0 +1,2 @@
+requests>=2,<3
+textual>=8.2,<9

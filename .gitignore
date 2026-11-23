@@ -62,6 +62,7 @@ logs/
 .env
 .env.*
 !.env.example
+/user_config.json
 
 # ---------- IDE / editors ----------
 .idea/

@@ -55,8 +55,11 @@ class SystemdJournalParser:
     
     def match(self, line: str) -> bool:
         stripped = line.strip()
-        # Check for systemd format: "Mon DD HH:MM:SS hostname unit:"
-        return bool(re.match(r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\S+", stripped))
+        match = self._pattern.match(stripped)
+        if not match:
+            return False
+        unit = match.group(3)
+        return unit == "systemd" or unit.startswith("systemd-") or unit.endswith((".service", ".scope", ".slice"))
     
     def parse(self, line: str) -> Dict[str, Any]:
         raw = line.strip()
@@ -66,21 +69,21 @@ class SystemdJournalParser:
         if m:
             timestamp, hostname, unit, pid, priority, message = m.groups()
             level = self.PRIORITY_MAP.get(priority, "INFO")
-            return self._build_result(timestamp, hostname, unit, pid, message, level, priority)
+            return self._build_result(raw, timestamp, hostname, unit, pid, message, level, priority)
         
         # Try structured pattern
         m = self._structured_pattern.match(raw)
         if m:
             timestamp, hostname, unit, pid, key, value, message = m.groups()
             level = self._detect_level(message)
-            return self._build_result(timestamp, hostname, unit, pid, message, level, None)
+            return self._build_result(raw, timestamp, hostname, unit, pid, message, level, None)
         
         # Try main pattern
         m = self._pattern.match(raw)
         if m:
             timestamp, hostname, unit, pid, message = m.groups()
             level = self._detect_level(message)
-            return self._build_result(timestamp, hostname, unit, pid, message, level, None)
+            return self._build_result(raw, timestamp, hostname, unit, pid, message, level, None)
         
         # Fallback
         return {
@@ -97,7 +100,7 @@ class SystemdJournalParser:
             "message": raw
         }
     
-    def _build_result(self, timestamp: str, hostname: str, unit: str, pid: str,
+    def _build_result(self, raw: str, timestamp: str, hostname: str, unit: str, pid: str,
                      message: str, level: str, priority: str) -> Dict[str, Any]:
         """Build standardized result."""
         # Parse timestamp: "Mon DD HH:MM:SS"
@@ -120,7 +123,7 @@ class SystemdJournalParser:
         
         result = {
             "format": "systemd",
-            "raw": message if isinstance(message, str) else raw,
+            "raw": raw,
             "date": date_part,
             "time": time_part,
             "timestamp": f"{date_part}T{time_part}",
