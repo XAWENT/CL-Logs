@@ -4,14 +4,14 @@ from typing import Any, Dict
 
 class NginxApacheParser:
     _pattern = re.compile(
-        r"(\S+) (\S+) (\S+) \[([^\]]+)\] "
-        r"\"(\S+) ([^\"]+) (\S+)\" "
-        r"(\d{3}) (\d+|-)"
-        r"(?: \"([^\"]*)\" \"([^\"]*)\")?"
+        r"(\S+)\s+(\S+)\s+(\S+)\s+\[([^\]]+)\]\s+"
+        r"\"(\S+)\s+([^\"]+)\s+(HTTP/[\d.]+)\"\s+"
+        r"(\d{3})\s+(\d+|-)"
+        r"(?:\s+\"([^\"]*)\"\s+\"([^\"]*)\")?"
     )
 
     def match(self, line: str) -> bool:
-        return bool(re.match(r"\d+\.\d+\.\d+\.\d+ ", line))
+        return bool(self._pattern.fullmatch(line.strip()))
 
     def parse(self, line: str) -> Dict[str, Any]:
         raw = line.strip()
@@ -37,6 +37,14 @@ class NginxApacheParser:
             referer, user_agent
         ) = m.groups()
 
+        status_code = int(status)
+        if status_code >= 500:
+            level = "ERROR"
+        elif status_code >= 400:
+            level = "WARN"
+        else:
+            level = "INFO"
+
         return {
             "format": "nginx_apache",
             "raw": raw,
@@ -44,7 +52,7 @@ class NginxApacheParser:
             "time": "N",
             "timestamp": time_str,
 
-            "level": "N",
+            "level": level,
             "source": ip,
             "module": "N",
             "thread": "N",
@@ -58,7 +66,7 @@ class NginxApacheParser:
             "method": method,
             "path": path,
             "protocol": protocol,
-            "status_code": int(status),
+            "status_code": status_code,
             "response_size": int(size) if size != "-" else 0,
             "referer": referer,
             "user_agent": user_agent,

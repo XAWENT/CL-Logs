@@ -5,12 +5,14 @@ import threading
 import queue
 import re
 import requests
+from log_parser.redaction import MASK, mask_sensitive
 from logic.notifications import (
     NOTIFICATION_CONFIG,
     NOTIFICATION_URL_REQUIRED,
     load_config,
     notification_url,
     save_config,
+    send_log_notification,
 )
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
@@ -80,7 +82,7 @@ class LogAnalyzerApp:
         if self.user_hash and not change_hash:
             answer = messagebox.askyesno(
                 "Настройка уведомлений",
-                f"Найден сохранённый user_hash: {self.user_hash}\nИспользовать его?"
+                f"Найден сохранённый user_hash: {MASK}\nИспользовать его?"
             )
             if answer:
                 return self.save_user_config(self.user_hash, True)
@@ -88,7 +90,8 @@ class LogAnalyzerApp:
         while True:
             new_hash = simpledialog.askstring(
                 "User hash",
-                "Введите ваш user_hash (или оставьте поле пустым для отмены):"
+                "Введите ваш user_hash (или оставьте поле пустым для отмены):",
+                show="*",
             )
             if new_hash is None or new_hash.strip() == "":
                 return False
@@ -136,48 +139,9 @@ class LogAnalyzerApp:
                     return False
 
     def send_notification(self, level, message, source, timestamp=""):
-        base_url = notification_url()
-        user_hash = self.user_hash
-        if not self.notifications_enabled or not user_hash or not base_url:
+        if not self.notifications_enabled:
             return False
-
-        try:
-            tg_message = f"⚠️ {level}\n📝 Сообщение: {message}"
-            send_data = {
-                "user_hash": user_hash,
-                "message": tg_message.strip(),
-                "level": level
-            }
-            response = requests.post(f"{base_url}/send", json=send_data, timeout=10)
-
-            if response.status_code != 200:
-                return False
-
-            if level == "ERROR":
-                email_subject = f"🚨 КРИТИЧЕСКАЯ ОШИБКА - {timestamp}"
-                email_message = f"""
-🚨 КРИТИЧЕСКАЯ ОШИБКА В СИСТЕМЕ
-
-⏰ Время события: {timestamp}
-📁 Источник: {source}
-🔴 Уровень: {level}
-
-📋 Сообщение ошибки:
-{message}
-
-⚠️ Требуется немедленное вмешательство!
-"""
-                email_data = {
-                    "user_hash": user_hash,
-                    "subject": email_subject,
-                    "message": email_message.strip()
-                }
-                response = requests.post(f"{base_url}/send_email", json=email_data, timeout=10)
-                return response.status_code == 200
-
-            return True
-        except Exception:
-            return False
+        return send_log_notification(level, message, source, timestamp, self.user_hash)
 
     def open_notification_settings(self):
         if self.notify_window and self.notify_window.winfo_exists():
@@ -204,7 +168,7 @@ class LogAnalyzerApp:
         if not available:
             ttk.Label(main, text=NOTIFICATION_URL_REQUIRED, wraplength=360).pack(anchor=tk.W, pady=5)
         if self.user_hash:
-            ttk.Label(main, text=f"Хэш: {self.user_hash}").pack(anchor=tk.W, pady=5)
+            ttk.Label(main, text=f"Хэш: {MASK}").pack(anchor=tk.W, pady=5)
 
         def enable():
             if self.setup_notifications_gui():
@@ -288,7 +252,7 @@ class LogAnalyzerApp:
                                                      height=15, state='disabled')
         self.detail_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        raw_frame = ttk.LabelFrame(center_panel, text="Исходный текст")
+        raw_frame = ttk.LabelFrame(center_panel, text="Исходный текст с маскировкой")
         raw_frame.pack(fill=tk.BOTH, expand=True)
         self.raw_text = scrolledtext.ScrolledText(raw_frame, wrap=tk.WORD,
                                                   font=("Courier New", 10),
@@ -356,7 +320,7 @@ class LogAnalyzerApp:
         main.pack(fill=tk.BOTH, expand=True)
         ttk.Label(main, text="User hash:", font=("Arial", 10)).pack(anchor=tk.W, pady=5)
         hash_var = tk.StringVar(value=self.user_hash)
-        entry = ttk.Entry(main, textvariable=hash_var, width=40)
+        entry = ttk.Entry(main, textvariable=hash_var, width=40, show="*")
         entry.pack(fill=tk.X, pady=5)
 
         def save():
@@ -435,8 +399,8 @@ class LogAnalyzerApp:
                                           filetypes=[("Лог файлы", "*.log"), ("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")])
         if path:
             self.current_log_path = path
-            self.path_var.set(path)
-            self.status_var.set(f"Выбран файл: {Path(path).name}")
+            self.path_var.set(mask_sensitive(path))
+            self.status_var.set(f"Выбран файл: {mask_sensitive(Path(path).name)}")
 
     def start_realtime(self):
         self._start_log_operation(
@@ -452,7 +416,7 @@ class LogAnalyzerApp:
                     return
                 self.log_queue.put((operation, "entry", entry))
         except Exception as e:
-            self.log_queue.put((operation, "error", str(e)))
+            self.log_queue.put((operation, "error", mask_sensitive(str(e))))
         else:
             self.log_queue.put((operation, "realtime_finished", None))
 
@@ -494,7 +458,7 @@ class LogAnalyzerApp:
                 daemon=True,
             ).start()
         except RuntimeError as e:
-            self.log_queue.put((operation, "error", str(e)))
+            self.log_queue.put((operation, "error", mask_sensitive(str(e))))
 
     def run_analysis(self, operation, path, dangers):
         try:
@@ -509,7 +473,7 @@ class LogAnalyzerApp:
                 'danger_lines': danger_lines
             }))
         except Exception as e:
-            self.log_queue.put((operation, "error", str(e)))
+            self.log_queue.put((operation, "error", mask_sensitive(str(e))))
 
     def open_settings(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -740,7 +704,7 @@ class LogAnalyzerApp:
                 if len(self.parsed_entries):
                     text += f"Процент опасных: {(danger_cnt/len(self.parsed_entries)*100):.1f}%\n"
             if self.can_send_notifications():
-                text += f"\n🔔 Уведомления: ВКЛ ({self.user_hash[:8]}...)"
+                text += "\n🔔 Уведомления: ВКЛ"
             else:
                 text += "\n🔔 Уведомления: ВЫКЛ"
                 if not notification_url():

@@ -15,7 +15,7 @@ class ApacheErrorParser:
         r"\[(\w+)\]\s+"  # level: error, warn, info, debug, emerg, alert, crit, notice
         r"(?:\[pid\s+(\d+)\]\s+)?"  # optional pid
         r"(?:\[tid\s+(\d+)\]\s+)?"  # optional tid
-        r"(?:\[client\s+([\d\.]+)(?::(\d+))?\]\s+)?"  # optional client IP:port
+        r"(?:\[client\s+([\d.]+|\*{6})(?::(\d+))?\]\s+)?"  # optional client IP:port
         r"(.*)$"  # message
     )
     
@@ -24,7 +24,7 @@ class ApacheErrorParser:
         r"^\[([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\d{4})\]\s+"
         r"\[(\w+)\]\s+"
         r"(?:\[pid\s+(\d+)\](?:\s+\[tid\s+(\d+)\])?\s+)?"
-        r"(?:\[client\s+([\d\.]+)(?::(\d+))?\]\s+)?"
+        r"(?:\[client\s+([\d.]+|\*{6})(?::(\d+))?\]\s+)?"
         r"\[uri\s+([^\]]+)\]\s*"  # request URI
         r"(.*)$"
     )

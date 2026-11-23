@@ -4,12 +4,15 @@ from menu import menu
 from colors import C
 import requests
 
+from log_parser.redaction import MASK, mask_sensitive
+
 from logic.notifications import (
     NOTIFICATION_CONFIG,
     NOTIFICATION_URL_REQUIRED,
     load_config,
     notification_url,
     save_config,
+    send_log_notification,
 )
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
@@ -43,7 +46,7 @@ def setup_notifications(*, change_hash=False):
         return current_status
 
     if saved_hash and not change_hash:
-        print(C.Y + f"📋 Найден сохраненный user_hash: {saved_hash}" + C.RESET)
+        print(C.Y + f"📋 Найден сохраненный user_hash: {MASK}" + C.RESET)
         use_saved = input(C.Y + "Использовать его? (y/n): " + C.RESET).lower()
         if use_saved == "y":
             if save_notification_settings(saved_hash, True):
@@ -122,66 +125,7 @@ def setup_notifications(*, change_hash=False):
 
 
 def send_notification(level, message, source, timestamp="", user_hash=None):
-    base_url = notification_url()
-    if not base_url or not user_hash:
-        return False
-
-    try:
-        telegram_message = f"""
-⚠️ {level}
-📝 Сообщение: {message}
-"""
-
-        send_data = {
-            "user_hash": user_hash,
-            "message": telegram_message.strip(),
-            "level": level
-        }
-
-        response = requests.post(
-            f"{base_url}/send",
-            headers={"Content-Type": "application/json"},
-            json=send_data,
-            timeout=10
-        )
-
-        if response.status_code != 200:
-            return False
-
-        if level == "ERROR":
-            email_subject = f"🚨 КРИТИЧЕСКАЯ ОШИБКА в системе - {timestamp}"
-            email_message = f"""
-🚨 КРИТИЧЕСКАЯ ОШИБКА В СИСТЕМЕ
-
-⏰ Время события: {timestamp}
-📁 Источник: {source}
-🔴 Уровень: {level}
-
-📋 Сообщение ошибки:
-{message}
-
-⚠️ Требуется немедленное вмешательство!
-"""
-
-            email_data = {
-                "user_hash": user_hash,
-                "subject": email_subject,
-                "message": email_message.strip()
-            }
-
-            response = requests.post(
-                f"{base_url}/send_email",
-                headers={"Content-Type": "application/json"},
-                json=email_data,
-                timeout=10
-            )
-
-            return response.status_code == 200
-
-        return True
-
-    except:
-        return False
+    return send_log_notification(level, message, source, timestamp, user_hash)
 
 
 def main():
@@ -268,7 +212,7 @@ def main():
             except KeyboardInterrupt:
                 print(C.Y + "\n\n⏹ Остановлено пользователем" + C.RESET)
             except Exception as e:
-                print(C.R + "\n❌ Ошибка: " + str(e) + C.RESET)
+                print(C.R + "\n❌ Ошибка: " + mask_sensitive(str(e)) + C.RESET)
 
             input(C.Y + "\n⏎ Нажмите Enter, чтобы вернуться в меню..." + C.RESET)
 
@@ -298,7 +242,7 @@ def main():
                 input(C.Y + "\n⏎ Нажмите Enter, чтобы продолжить..." + C.RESET)
                 continue
             except Exception as e:
-                print(C.R + "❌ Ошибка: " + str(e) + C.RESET)
+                print(C.R + "❌ Ошибка: " + mask_sensitive(str(e)) + C.RESET)
                 input(C.Y + "\n⏎ Нажмите Enter, чтобы продолжить..." + C.RESET)
                 continue
 
@@ -380,7 +324,7 @@ def main():
             if not notification_url():
                 print(C.Y + "🔕 Уведомления: ВЫКЛ. " + NOTIFICATION_URL_REQUIRED + C.RESET)
             elif notifications_enabled and user_hash:
-                print(C.G + f"🔔 Уведомления: ВКЛ (хэш: {user_hash[:8]}...)" + C.RESET)
+                print(C.G + f"🔔 Уведомления: ВКЛ (хэш: {MASK})" + C.RESET)
             else:
                 print(C.Y + "🔕 Уведомления: ВЫКЛ" + C.RESET)
 
@@ -427,7 +371,7 @@ def main():
                 if enabled_preference and user_hash:
                     if available:
                         print(C.G + "🔔 Уведомления включены" + C.RESET)
-                    print(C.C + f"🔑 Хэш: {user_hash}" + C.RESET)
+                    print(C.C + f"🔑 Хэш: {MASK}" + C.RESET)
                     print("\nВыберите действие:")
                     if available:
                         print(C.Y + "1)" + C.W + " Изменить user_hash")

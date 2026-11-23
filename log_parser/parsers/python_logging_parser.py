@@ -5,7 +5,7 @@ from typing import Dict, Any
 class PythonLoggingParser:
     _pattern = re.compile(
         r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:,\d{3})?)\s+-\s+"  # timestamp
-        r"([\w\.]+)\s+-\s+"  # logger name
+        r"([\w.*]+)\s+-\s+"  # logger name
         r"([A-Z]+)\s+-\s+"   # level
         r"(.*)$"             # message
     )
@@ -16,7 +16,7 @@ class PythonLoggingParser:
     )
 
     _bracket_pattern = re.compile(
-        r"^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s+\[([A-Z]+)\s*\]\s+([\w.]+):\s*(.*)$"
+        r"^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s+\[([A-Z]+)\s*\]\s+([\w.*]+):\s*(.*)$"
     )
 
     _slash_pattern = re.compile(

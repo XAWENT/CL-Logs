@@ -5,6 +5,7 @@ import os
 import typing
 
 from log_parser.fallback import fallback_parse
+from log_parser.redaction import LogRedactor, mask_sensitive
 
 
 STANDARD_FIELDS = {
@@ -133,7 +134,10 @@ def _load_parsers():
     return parsers
 
 def parse_line(line: str):
-    line = line.rstrip("\r\n")
+    return _parse_redacted_line(mask_sensitive(line.rstrip("\r\n")))
+
+
+def _parse_redacted_line(line: str):
     parsers = _load_parsers()
 
     for parser in parsers:
@@ -142,12 +146,12 @@ def parse_line(line: str):
                 entry = normalize(parser.parse(line))
                 entry["raw"] = line
                 return entry
-        except Exception as e:
+        except Exception:
             return normalize({
                 "format": "parser_error",
                 "raw": line,
                 "level": "ERROR",
-                "message": f"Parser crashed: {e}",
+                "message": f"Parser failed: {type(parser).__name__}",
             })
 
     entry = normalize(fallback_parse(line))
@@ -156,12 +160,10 @@ def parse_line(line: str):
 
 
 def parse_file(path: str):
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-
+    redactor = LogRedactor()
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
-            yield parse_line(line)
+            yield _parse_redacted_line(redactor.redact(line.rstrip("\r\n")))
 
 
 def get_errors(log_stream):

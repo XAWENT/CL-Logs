@@ -127,6 +127,25 @@ class NotificationTests(unittest.TestCase):
         self.post.side_effect = [Mock(status_code=200), Mock(status_code=503)]
         self.assertFalse(self.app.send_notification("ERROR", "test", "sample"))
 
+    def test_cli_and_gui_mask_sensitive_notification_fields_before_delivery(self):
+        self.env[NOTIFICATION_URL_ENV] = "https://notifications.example"
+        self.save_legacy_hash()
+        self.post.return_value = Mock(status_code=200)
+        args = ("ERROR", "api_key=request-secret", "operator@example.test", "token=timestamp-secret")
+
+        self.assertTrue(cli.send_notification(*args, user_hash="LOCAL123"))
+        self.assertTrue(self.app.send_notification(*args))
+
+        payloads = [call.kwargs["json"] for call in self.post.call_args_list]
+        self.assertEqual(len(payloads), 4)
+        self.assertEqual(payloads[:2], payloads[2:])
+        for payload in payloads:
+            self.assertIn("api_key=******", payload["message"])
+            self.assertEqual(payload["user_hash"], "LOCAL123")
+        for secret in ("request-secret", "operator@example.test", "timestamp-secret"):
+            self.assertNotIn(secret, repr(payloads))
+        self.assertIn("token=******", payloads[1]["subject"])
+
     def test_setup_and_sending_use_configured_url(self):
         self.env[NOTIFICATION_URL_ENV] = " https://notifications.example/api/ "
         self.get.return_value = Mock(status_code=200)

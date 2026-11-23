@@ -20,6 +20,7 @@ from textual.theme import Theme
 from textual.widgets import Button, DataTable, Footer, Input, Label, OptionList, SelectionList, Static
 from textual.worker import get_current_worker
 
+from log_parser.redaction import mask_sensitive
 from logic.notifications import (
     NOTIFICATION_CONFIG, NOTIFICATION_URL_REQUIRED, load_config, notification_url, save_config,
 )
@@ -172,7 +173,7 @@ class Details(ModalScreen):
                                          if e[k] != "N"), markup=False, classes="metadata")
                 yield Label("Сообщение", classes="caption")
                 yield Static(e["message"], markup=False)
-                yield Label("Исходная строка", classes="caption")
+                yield Label("Исходная строка с маскировкой", classes="caption")
                 yield Static(e["raw"], markup=False)
             with Horizontal(classes="buttons"):
                 yield Button("Закрыть  esc", id="close-detail")
@@ -200,7 +201,7 @@ class Journal(Page):
     def compose(self):
         yield from bar("Мониторинг" if self.live else "Анализ файла")
         with Vertical(classes="journal"):
-            yield Label(self.path.name, classes="title", markup=False)
+            yield Label(mask_sensitive(self.path.name), classes="title", markup=False)
             yield Static("", id="counts")
             with Horizontal(id="list-label"):
                 yield Label(self.FILTERS[0], id="filter-name")
@@ -260,7 +261,7 @@ class Journal(Page):
                 self.app.call_from_thread(self.set_status, "Файл прочитан")
         except OSError as exc:
             if not self.stop.is_set() and not worker.is_cancelled:
-                self.app.call_from_thread(self.set_status, str(exc))
+                self.app.call_from_thread(self.set_status, mask_sensitive(str(exc)))
 
     def set_status(self, text):
         if self.is_mounted and not self.stop.is_set():

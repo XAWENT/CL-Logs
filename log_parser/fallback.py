@@ -33,16 +33,15 @@ LEVEL_MAP = {
 }
 
 DATE_PATTERNS = [
-    r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",     # 15.11.23 15/11/2023 15-11-23
     r"\b\d{4}-\d{2}-\d{2}\b",                  # 2025-11-24
+    r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",     # 15.11.23 15/11/2023 15-11-23
     r"\b[A-Z][a-z]{2}\s+\d{1,2}\b",            # Nov 24  (syslog)
 ]
 
 TIME_PATTERNS = [
-    r"\b\d{2}:\d{2}:\d{2}\b",
-    r"\b\d{2}:\d{2}\b",
+    r"\b\d{2}:\d{2}:\d{2}(?:[.,]\d{3,6})?\b",  # 12:34:56.123456
     r"\b\d{6}\.\d{3}\b",                       # 182414.603
-    r"\b\d{2}:\d{2}:\d{2}[.,]\d{3,6}\b",      # 12:34:56.123456
+    r"\b\d{2}:\d{2}\b",
 ]
 
 def extract_date(line: str):
@@ -57,7 +56,7 @@ def extract_time(line: str):
         m = re.search(p, line)
         if m:
             t = m.group(0)
-            if len(t) == 6 or "." in t:        # форматы типа 192414.603
+            if ":" not in t:
                 return f"{t[:2]}:{t[2:4]}:{t[4:]}"
             return t
     return "N"

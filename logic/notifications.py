@@ -4,6 +4,10 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 
+import requests
+
+from log_parser.redaction import mask_sensitive
+
 
 NOTIFICATION_CONFIG = Path("user_config.json")
 NOTIFICATION_URL_ENV = "CL_LOGS_NOTIFICATION_URL"
@@ -48,3 +52,35 @@ def save_config(path, user_hash, enabled):
         temporary_path.replace(path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def send_log_notification(level, message, source, timestamp, user_hash):
+    base_url = notification_url()
+    if not base_url or not user_hash:
+        return False
+
+    try:
+        level, message, source, timestamp = (
+            mask_sensitive(value) for value in (level, message, source, timestamp)
+        )
+        response = requests.post(f"{base_url}/send", json={
+            "user_hash": user_hash,
+            "level": level,
+            "message": f"⚠️ {level}\n📝 Сообщение: {message}".strip(),
+        }, timeout=10)
+        if response.status_code != 200 or level != "ERROR":
+            return response.status_code == 200
+
+        response = requests.post(f"{base_url}/send_email", json={
+            "user_hash": user_hash,
+            "subject": f"🚨 КРИТИЧЕСКАЯ ОШИБКА - {timestamp}",
+            "message": (
+                "🚨 КРИТИЧЕСКАЯ ОШИБКА В СИСТЕМЕ\n\n"
+                f"⏰ Время события: {timestamp}\n📁 Источник: {source}\n🔴 Уровень: {level}\n\n"
+                f"📋 Сообщение ошибки:\n{message}\n\n"
+                "⚠️ Требуется немедленное вмешательство!"
+            ),
+        }, timeout=10)
+        return response.status_code == 200
+    except Exception:
+        return False

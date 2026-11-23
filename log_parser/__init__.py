@@ -11,6 +11,9 @@ The primary entry points are:
 * :func:`log_parser.parser_engine.parse_file` – parse an entire file.
 * :func:`log_parser.parser_engine.get_errors` – filter out error-level entries.
 
+The parsing entry points mask recognized sensitive values before field
+extraction. The returned raw field contains the masked input.
+
 Each parser plugin must define a class that implements two methods:
 
 ``match(self, line: str) -> bool``

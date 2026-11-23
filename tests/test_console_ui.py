@@ -57,7 +57,9 @@ class ConsoleTests(IsolatedAsyncioTestCase):
                     self.assertLessEqual(abs(region.x * 2 + region.width - width), 2)
 
     async def test_keyboard_analysis_filter_and_detail(self):
-        self.path.write_text('[12:00:00] [Server/INFO]: Ready\n[12:00:01] [Server/ERROR]: Failed\n')
+        self.path.write_text(
+            '[12:00:00] [Server/INFO]: Ready\n[12:00:01] [Server/ERROR]: Failed password=private-value\n'
+        )
         async with self.app.run_test(size=(72, 22)) as pilot:
             await pilot.press("enter", "enter")
             self.assertIsInstance(self.app.screen, FilePicker)
@@ -73,9 +75,12 @@ class ConsoleTests(IsolatedAsyncioTestCase):
             self.assertEqual((self.app.theme, table.cursor_row), ("amber", 1))
             await pilot.press("f")
             self.assertEqual(table.row_count, 1)
+            self.assertIn("Failed password=******", str(table.get_row_at(0)[-1]))
             await pilot.press("enter")
             self.assertIsInstance(self.app.screen, Details)
             self.assertEqual(self.app.screen.entry["index"], 2)
+            self.assertIn("password=******", self.app.screen.entry["raw"])
+            self.assertNotIn("private-value", repr(self.app.screen.entry))
             await pilot.press("escape", "escape")
             self.assertIsInstance(self.app.screen, Home)
             self.send.assert_not_called()
