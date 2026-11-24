@@ -6,7 +6,6 @@ import re
 from threading import Event
 from time import monotonic
 
-import requests
 from rich.cells import get_character_cell_size
 from rich.segment import Segment
 from rich.text import Text
@@ -21,8 +20,10 @@ from textual.widgets import Button, DataTable, Footer, Input, Label, OptionList,
 from textual.worker import get_current_worker
 
 from log_parser.redaction import mask_sensitive
+from logic.notification_queue import NotificationQueue
 from logic.notifications import (
-    NOTIFICATION_CONFIG, NOTIFICATION_URL_REQUIRED, load_config, notification_url, save_config,
+    NOTIFICATION_CONFIG, NOTIFICATION_URL_REQUIRED, RecipientVerificationError, load_config,
+    notification_url, save_config, verify_notification_recipient,
 )
 from logic.onetime_logic import iter_log_entries
 from logic.realtime_logic import iterate_realtime
@@ -196,6 +197,7 @@ class Journal(Page):
         self.entries = {}
         self.counts = Counter()
         self.total = self.danger_count = self.sent = self.failed = self.filter_index = 0
+        self.skipped = self.awaiting_delivery = 0
         self.stop = Event()
 
     def compose(self):
@@ -213,6 +215,8 @@ class Journal(Page):
 
     def on_mount(self):
         table = self.query_one(DataTable)
+        self.delivery = NotificationQueue(self.app.send_notification)
+        self.set_interval(0.2, self.refresh_delivery)
         table.add_column("Строка", width=6)
         table.add_column("Время", width=12)
         table.add_column("Уровень", width=8)
@@ -224,10 +228,12 @@ class Journal(Page):
 
     def action_back(self):
         self.stop.set()
+        self.delivery.close()
         super().action_back()
 
     def on_unmount(self):
         self.stop.set()
+        self.delivery.close()
 
     @work(thread=True)
     def read_entries(self):
@@ -236,7 +242,6 @@ class Journal(Page):
         user_hash, enabled = load_config(NOTIFICATION_CONFIG)
         enabled = enabled and bool(notification_url())
         pending = []
-        sent = failed = 0
         try:
             stream = (iterate_realtime(self.path, dangers, self.stop) if self.live
                       else iter_log_entries(self.path, dangers))
@@ -247,17 +252,12 @@ class Journal(Page):
                     return
                 pending.append(entry)
                 if enabled and entry["is_danger"]:
-                    timestamp = " ".join(entry[k] for k in ("date", "time") if entry[k] != "N")
-                    if self.app.send_notification(entry["level"], entry["message"], entry["source"],
-                                                  timestamp, user_hash):
-                        sent += 1
-                    else:
-                        failed += 1
+                    self.delivery.submit(entry, user_hash)
                 if self.live or len(pending) == 128:
-                    self.app.call_from_thread(self.accept, pending, sent, failed)
+                    self.app.call_from_thread(self.accept, pending)
                     pending = []
             if not self.stop.is_set() and not worker.is_cancelled:
-                self.app.call_from_thread(self.accept, pending, sent, failed)
+                self.app.call_from_thread(self.accept, pending)
                 self.app.call_from_thread(self.set_status, "Файл прочитан")
         except OSError as exc:
             if not self.stop.is_set() and not worker.is_cancelled:
@@ -281,7 +281,7 @@ class Journal(Page):
                       Text(level if level != "N" else "—", style=color or ""),
                       Text(message, overflow="ellipsis", no_wrap=True), key=str(entry["index"]))
 
-    def accept(self, batch, sent, failed):
+    def accept(self, batch):
         if self.stop.is_set() or not self.is_mounted:
             return
         table = self.query_one(DataTable)
@@ -297,13 +297,18 @@ class Journal(Page):
             self.total += 1
             if self.visible_entry(entry):
                 self.insert_row(table, entry)
-        self.sent, self.failed = sent, failed
         self.refresh_counts()
         self.update_empty()
         if follow and table.row_count:
             table.move_cursor(row=table.row_count - 1, animate=False)
         if batch and self.live:
             self.set_status(f"В эфире · последние {len(self.entries)}")
+
+    def refresh_delivery(self):
+        counts = self.delivery.counts()
+        if counts != (self.sent, self.failed, self.skipped, self.awaiting_delivery):
+            self.sent, self.failed, self.skipped, self.awaiting_delivery = counts
+            self.refresh_counts()
 
     def refresh_counts(self):
         counts = Text()
@@ -316,8 +321,10 @@ class Journal(Page):
                 counts.append("   ")
             counts.append(f"{label} ")
             counts.append(str(value), style=color)
-        if self.sent or self.failed:
-            counts.append(f"   Доставлено {self.sent} / сбоев {self.failed}")
+        if self.sent or self.failed or self.skipped or self.awaiting_delivery:
+            counts.append(f"   Доставлено {self.sent} / сбоев {self.failed} / пропущено {self.skipped}")
+            if self.awaiting_delivery:
+                counts.append(f" / в работе {self.awaiting_delivery}")
         self.query_one("#counts", Static).update(counts)
 
     def update_empty(self):
@@ -380,6 +387,7 @@ class Settings(Page):
             if enabled or notification_url():
                 with Horizontal(classes="buttons"):
                     yield Button("Отключить", id="disable")
+            yield Static("", id="notification-feedback", markup=False)
         yield Footer()
 
     def on_button_pressed(self, event):
@@ -400,27 +408,23 @@ class Settings(Page):
                 user_hash, _ = load_config(NOTIFICATION_CONFIG)
                 save_config(NOTIFICATION_CONFIG, user_hash, False)
                 self.query_one("#notify-state", Label).update("Выключены")
+                self.query_one("#notification-feedback", Static).update("")
             elif action == "enable":
-                recipient = self.query_one("#recipient", Input).value.strip().upper()
-                if len(recipient) < 8:
-                    self.query_one("#notify-state", Label).update("Введите не менее 8 символов.")
-                    return
+                recipient = self.query_one("#recipient", Input).value.strip()
                 self.query_one("#enable", Button).disabled = True
                 self.query_one("#disable", Button).disabled = True
-                self.query_one("#notify-state", Label).update("Проверка соединения…")
+                self.query_one("#notification-feedback", Static).update("Проверка соединения…")
                 self.verify_recipient(recipient)
         except OSError as exc:
-            status.update(str(exc))
+            feedback = self.query_one("#notification-feedback", Static) if action == "disable" else status
+            feedback.update(f"Не удалось сохранить настройки: {exc}")
 
     @work(thread=True)
     def verify_recipient(self, recipient):
-        url = notification_url()
         try:
-            requests.get(f"{url}/", timeout=3).raise_for_status()
-            requests.post(f"{url}/send", json={"user_hash": recipient, "level": "INFO",
-                          "message": "Проверка уведомлений CL-Logs"}, timeout=5).raise_for_status()
+            verify_notification_recipient(notification_url(), recipient)
             error = ""
-        except requests.RequestException as exc:
+        except RecipientVerificationError as exc:
             error = str(exc)
         if not get_current_worker().is_cancelled:
             self.app.call_from_thread(self.finish_verify, recipient, error)
@@ -432,8 +436,10 @@ class Settings(Page):
             try:
                 save_config(NOTIFICATION_CONFIG, recipient, True)
             except OSError as exc:
-                error = str(exc)
-        self.query_one("#notify-state", Label).update(Text(error or "Включены"))
+                error = f"Не удалось сохранить настройки: {exc}"
+            else:
+                self.query_one("#notify-state", Label).update("Включены")
+        self.query_one("#notification-feedback", Static).update(error)
         self.query_one("#enable", Button).disabled = False
         self.query_one("#disable", Button).disabled = False
 

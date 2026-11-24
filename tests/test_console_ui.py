@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from threading import Event
 from tempfile import TemporaryDirectory
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import Mock, patch
@@ -9,6 +10,7 @@ from rich.style import Style
 from textual.widgets import DataTable, Input, SelectionList
 
 from console_ui import Details, FilePicker, Home, Journal, LogConsole, RevealFrame, Settings
+from logic.notifications import NOTIFICATION_URL_ENV, load_config, save_config
 from logic.settings import load_settings
 
 
@@ -97,6 +99,30 @@ class ConsoleTests(IsolatedAsyncioTestCase):
             await pilot.press("escape")
             self.assertIsInstance(self.app.screen, Home)
 
+    async def test_recipient_replacement_keeps_case_and_preserves_active_hash_on_failure(self):
+        save_config(self.config, "Current123", True)
+        with (patch.dict("os.environ", {NOTIFICATION_URL_ENV: "http://localhost:8042"}),
+              patch("requests.get", return_value=Mock(status_code=200)),
+              patch("requests.post") as post):
+            async with self.app.run_test(size=(90, 42)) as pilot:
+                await pilot.press("s")
+                screen = self.app.screen
+                recipient = screen.query_one("#recipient", Input)
+                recipient.value = "  Replacement123  "
+                post.return_value = Mock(status_code=404)
+                await pilot.click("#enable")
+                await self.app.workers.wait_for_complete()
+                self.assertEqual(load_config(self.config), ("Current123", True))
+                self.assertIn("Получатель не найден", str(screen.query_one("#notification-feedback").render()))
+                self.assertIn("Включены", str(screen.query_one("#notify-state").render()))
+
+                post.return_value = Mock(status_code=204)
+                post.return_value.json.side_effect = ValueError("no response body")
+                await pilot.click("#enable")
+                await self.app.workers.wait_for_complete()
+                self.assertEqual(post.call_args.kwargs["json"]["user_hash"], "Replacement123")
+                self.assertEqual(load_config(self.config), ("Replacement123", True))
+
     async def test_live_reader_stops_on_back_while_file_is_idle(self):
         self.path.touch()
         async with self.app.run_test() as pilot:
@@ -115,3 +141,26 @@ class ConsoleTests(IsolatedAsyncioTestCase):
             await asyncio.wait_for(self.app.workers.wait_for_complete(), timeout=2)
             self.assertTrue(journal.stop.is_set())
             self.assertIsInstance(self.app.screen, Home)
+
+    async def test_journal_remains_readable_during_slow_delivery(self):
+        started, release = Event(), Event()
+        def slow_sender(*args):
+            started.set()
+            return release.wait(5)
+
+        self.send.side_effect = slow_sender
+        self.config.write_text('{"user_hash":"MyReceiver", "notifications_enabled":true}')
+        self.path.write_text('{"level":"ERROR","message":"failure"}\n{"level":"INFO","message":"ready"}\n')
+        with patch("console_ui.notification_url", return_value="http://localhost"):
+            async with self.app.run_test() as pilot:
+                try:
+                    await pilot.press("a")
+                    self.app.screen.query_one(Input).value = str(self.path)
+                    await pilot.press("enter")
+                    self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                    await asyncio.wait_for(self.app.workers.wait_for_complete(), timeout=2)
+                    self.assertEqual(self.app.screen.query_one(DataTable).row_count, 2)
+                    await pilot.press("enter")
+                    self.assertIsInstance(self.app.screen, Details)
+                finally:
+                    release.set()

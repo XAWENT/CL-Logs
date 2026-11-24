@@ -1,5 +1,9 @@
-import os
+import errno
 import json
+import os
+from pathlib import Path
+from stat import S_IMODE
+from tempfile import NamedTemporaryFile
 
 settings_file = 'settings.json'
 
@@ -14,23 +18,37 @@ default_dangers = {
 }
 
 def load_settings():
-    if not os.path.exists(settings_file):
-        return default_dangers.copy()
-
+    dangers = default_dangers.copy()
     try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            merged = default_dangers.copy()
-            merged.update(data)
-            return merged
-    except:
-        return default_dangers.copy()
+        data = json.loads(Path(settings_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return dangers
+    if isinstance(data, dict):
+        dangers.update({level: enabled for level, enabled in data.items() if isinstance(enabled, bool)})
+    return dangers
 
 
 def save_settings(dangers: dict):
-    with open(settings_file, "w", encoding="utf-8") as f:
-        json.dump(dangers, f, indent=4, ensure_ascii=False)
+    path = Path(settings_file).resolve()
+    try:
+        mode = S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = None
+    if mode is not None and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), settings_file)
+
+    temp = NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False)
+    temporary_path = Path(temp.name)
+    try:
+        with temp:
+            json.dump(dangers, temp, indent=4, ensure_ascii=False)
+        if mode is not None:
+            temporary_path.chmod(mode)
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 def restoretodefaults():
-    save_settings(default_dangers.copy())
-    return default_dangers.copy()
+    dangers = default_dangers.copy()
+    save_settings(dangers)
+    return dangers

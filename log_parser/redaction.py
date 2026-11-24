@@ -136,11 +136,39 @@ def _container_end(text, start, depth):
     return len(text), depth
 
 
-def _mask_json(text, depth):
+class _ObjectPairs(list):
+    """Keep duplicate keys until all original values have been inspected."""
+
+
+def _mask_json(text, depth, redactor):
+    start = len(text) - len(text.lstrip())
+    try:
+        value, end = json.JSONDecoder(object_pairs_hook=_ObjectPairs).raw_decode(text, start)
+    except json.JSONDecodeError:
+        return None
+    if text[end:].strip():
+        return None
+
     changed = False
 
-    def mask_value(value):
+    def mask_value(value, *, root=False):
         nonlocal changed
+        if isinstance(value, _ObjectPairs):
+            result = {}
+            stream_key = _docker_stream_key(value) if root else None
+            for key, item in value:
+                if _sensitive_key(key):
+                    safe = MASK
+                    changed |= item != MASK
+                elif stream_key and key == "log" and isinstance(item, str):
+                    safe = redactor.redact_stream(stream_key, item, depth + 1)
+                    changed |= safe != item
+                else:
+                    safe = mask_value(item)
+                safe_key = _mask_text(key, depth + 1)
+                changed |= safe_key != key
+                result[safe_key] = safe
+            return result
         if isinstance(value, list):
             return [mask_value(item) for item in value]
         if isinstance(value, str):
@@ -154,32 +182,23 @@ def _mask_json(text, depth):
                 return MASK
         return value
 
-    def mask_object(pairs):
-        nonlocal changed
-        result = {}
-        for key, value in pairs:
-            if _sensitive_key(key):
-                changed |= value != MASK
-                safe_value = MASK
-            else:
-                safe_value = mask_value(value)
-            safe_key = _mask_text(key, depth + 1)
-            changed |= safe_key != key
-            result[safe_key] = safe_value
-        return result
+    value = mask_value(value, root=True)
+    if changed:
+        return text[:start] + json.dumps(value, ensure_ascii=True) + text[end:]
+    return text
 
-    try:
-        decoder = json.JSONDecoder(object_pairs_hook=mask_object)
-        start = len(text) - len(text.lstrip())
-        value, end = decoder.raw_decode(text, start)
-        if not text[end:].strip():
-            value = mask_value(value)
-            if changed:
-                return text[:start] + json.dumps(value, ensure_ascii=True) + text[end:]
-            return text
-    except json.JSONDecodeError:
-        pass
-    return None
+
+def _docker_stream_key(pairs):
+    fields = dict(pairs)
+    stream = fields.get("stream")
+    if stream not in ("stdout", "stderr") or not isinstance(fields.get("log"), str):
+        return None
+    container = fields.get("container")
+    if isinstance(container, _ObjectPairs):
+        info = dict(container)
+        container = info.get("id") or info.get("name")
+    container = fields.get("container_id") or container or fields.get("container_name")
+    return (container if isinstance(container, str) else "", stream)
 
 
 class LogRedactor:
@@ -191,12 +210,48 @@ class LogRedactor:
         self.container_depth = 0
         self.open_quote = ""
         self.folded_header = False
+        self.streams = {}
+
+    def has_continuation(self):
+        return bool(self.private_key or self.pending_value or self.container_depth or
+                    self.open_quote or self.folded_header or self.streams)
+
+    def redact_stream(self, key, payload, depth):
+        # Docker json-file stores successive lines of one stream in separate envelopes.
+        stream = self.streams.get(key) or LogRedactor()
+        safe = stream.redact_lines(payload, depth)
+        if stream.has_continuation():
+            self.streams[key] = stream
+        else:
+            self.streams.pop(key, None)
+        return safe
+
+    def redact_lines(self, text, depth):
+        if depth > 12:
+            return MASK
+        if (not self.has_continuation() and text.lstrip().startswith(("{", "["))
+                and "\n" in text.rstrip("\r\n")):
+            try:
+                safe = _mask_json(text, depth, self)
+            except (RecursionError, ValueError):
+                return MASK
+            if safe is not None:
+                return safe
+        lines = []
+        for line in text.splitlines(keepends=True):
+            content = line.rstrip("\r\n")
+            lines.append(self.redact(content, depth) + line[len(content):])
+        return "".join(lines)
 
     def redact(self, text, depth=0):
         if depth > 12:
             return MASK
         if self.private_key:
-            self.private_key = not _PEM_END.search(text)
+            end = _PEM_END.search(text)
+            if not end:
+                return MASK
+            self.private_key = False
+            self.redact(text[end.end():], depth + 1)
             return MASK
         if self.open_quote:
             if quoted := _QUOTED.match(self.open_quote + text):
@@ -211,6 +266,10 @@ class LogRedactor:
                 self.pending_value = False
                 if text.lstrip().startswith(("{", "[")):
                     _, self.container_depth = _container_end(text, 0, 0)
+                elif begin := _PEM_BEGIN.search(text):
+                    self.private_key = not _PEM_END.search(text, begin.end())
+                elif text.lstrip().startswith(('"', "'")) and not _QUOTED.match(text.lstrip()):
+                    self.open_quote = text.lstrip()[0]
                 return MASK
             return text
         if self.folded_header:
@@ -219,7 +278,7 @@ class LogRedactor:
             self.folded_header = False
         if text.lstrip().startswith(("{", "[")):
             try:
-                safe = _mask_json(text, depth)
+                safe = _mask_json(text, depth, self)
             except (RecursionError, ValueError):
                 return MASK
             if safe is not None:
@@ -298,21 +357,7 @@ class LogRedactor:
 
 
 def _mask_text(text, depth):
-    if depth > 12:
-        return MASK
-    if text.lstrip().startswith(("{", "[")) and "\n" in text.rstrip("\r\n"):
-        try:
-            safe = _mask_json(text, depth)
-        except (RecursionError, ValueError):
-            return MASK
-        if safe is not None:
-            return safe
-    redactor = LogRedactor()
-    lines = []
-    for line in text.splitlines(keepends=True):
-        content = line.rstrip("\r\n")
-        lines.append(redactor.redact(content, depth) + line[len(content):])
-    return "".join(lines)
+    return LogRedactor().redact_lines(text, depth)
 
 
 def mask_sensitive(text):

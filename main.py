@@ -2,17 +2,18 @@ import sys
 
 from menu import menu
 from colors import C
-import requests
 
 from log_parser.redaction import MASK, mask_sensitive
 
 from logic.notifications import (
     NOTIFICATION_CONFIG,
     NOTIFICATION_URL_REQUIRED,
+    RecipientVerificationError,
     load_config,
     notification_url,
     save_config,
     send_log_notification,
+    verify_notification_recipient,
 )
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
@@ -45,83 +46,37 @@ def setup_notifications(*, change_hash=False):
         print(C.Y + NOTIFICATION_URL_REQUIRED + C.RESET)
         return current_status
 
+    recipient = ""
     if saved_hash and not change_hash:
         print(C.Y + f"📋 Найден сохраненный user_hash: {MASK}" + C.RESET)
         use_saved = input(C.Y + "Использовать его? (y/n): " + C.RESET).lower()
         if use_saved == "y":
-            if save_notification_settings(saved_hash, True):
-                return saved_hash, True
-            return current_status
+            recipient = saved_hash
 
     while True:
-        print(C.W + "📝 Для отправки уведомлений нужен ваш user_hash." + C.RESET)
-        print(C.W + "   Его можно получить у администратора системы.\n" + C.RESET)
-
-        user_hash = input(C.Y + "Введите ваш user_hash (или Enter для пропуска): " + C.RESET).strip().upper()
-
-        if not user_hash:
-            return current_status
-
-        if len(user_hash) < 8:
-            print(C.R + "❌ Хэш слишком короткий. Минимум 8 символов." + C.RESET)
-            continue
+        if not recipient:
+            print(C.W + "📝 Для отправки уведомлений нужен ваш user_hash." + C.RESET)
+            print(C.W + "   Его можно получить у администратора системы.\n" + C.RESET)
+            recipient = input(C.Y + "Введите ваш user_hash (или Enter для пропуска): " + C.RESET).strip()
+            if not recipient:
+                return current_status
 
         print(C.C + "\n🔍 Проверяем соединение с сервером..." + C.RESET)
         try:
-            health_response = requests.get(f"{base_url}/", timeout=3)
-            if health_response.status_code != 200:
-                print(C.R + "❌ Сервер недоступен. Проверьте адрес сервера и соединение." + C.RESET)
-                retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
-                if retry != 'y':
-                    return current_status
-                continue
-
-            test_data = {
-                "user_hash": user_hash,
-                "message": "🔧 Тестовая проверка системы уведомлений\n✅ Соединение установлено",
-                "level": "INFO"
-            }
-
-            response = requests.post(
-                f"{base_url}/send",
-                headers={"Content-Type": "application/json"},
-                json=test_data,
-                timeout=5
-            )
-
-            if response.status_code == 200:
-                user_data = response.json().get('user', {})
-                if not save_notification_settings(user_hash, True):
-                    return current_status
-                print(C.G + f"\n✅ Настройка завершена успешно!" + C.RESET)
-                print(C.C + f"👤 Пользователь: {user_data.get('first_name', 'Unknown')}" + C.RESET)
-                return user_hash, True
-
-            elif response.status_code == 404:
-                error_msg = response.json().get('error', 'User not found')
-                print(C.R + f"❌ Ошибка: {error_msg}" + C.RESET)
-                print(C.Y + "🔍 Проверьте правильность user_hash." + C.RESET)
-            else:
-                print(C.R + f"❌ Ошибка сервера: {response.status_code}" + C.RESET)
-
-        except requests.exceptions.ConnectionError:
-            print(C.R + "❌ Не удалось подключиться к серверу." + C.RESET)
-            retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
-            if retry != 'y':
+            name = verify_notification_recipient(base_url, recipient)
+        except RecipientVerificationError as exc:
+            print(C.R + f"❌ Ошибка: {exc}" + C.RESET)
+            if input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower() != "y":
                 return current_status
+            recipient = ""
             continue
-        except requests.exceptions.Timeout:
-            print(C.R + "⏰ Таймаут при подключении к серверу." + C.RESET)
-            retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
-            if retry != 'y':
-                return current_status
-            continue
-        except Exception as e:
-            print(C.R + f"❌ Ошибка: {str(e)}" + C.RESET)
-            retry = input(C.Y + "🔄 Попробовать снова? (y/n): " + C.RESET).lower()
-            if retry != 'y':
-                return current_status
-            continue
+
+        if not save_notification_settings(recipient, True):
+            return current_status
+        print(C.G + "\n✅ Настройка завершена успешно!" + C.RESET)
+        if name:
+            print(C.C + f"👤 Пользователь: {name}" + C.RESET)
+        return recipient, True
 
 
 def send_notification(level, message, source, timestamp="", user_hash=None):
@@ -336,27 +291,30 @@ def main():
 
             sec_choice = input(C.Y + "Выберите пункт: " + C.RESET)
 
-            if sec_choice == "1":
-                print(C.W + "\nДля каждого уровня укажите 1 (опасный) или 0 (безопасный):\n")
-                for lvl in dangers:
-                    current = "1" if dangers[lvl] else "0"
-                    while True:
-                        val = input(C.W + f"{lvl} (текущее: {current}): ")
-                        if val == "1":
-                            dangers[lvl] = True
-                            break
-                        elif val == "0":
-                            dangers[lvl] = False
-                            break
-                        else:
+            if sec_choice in ("1", "2"):
+                pending_dangers = dangers.copy()
+                if sec_choice == "1":
+                    print(C.W + "\nДля каждого уровня укажите 1 (опасный) или 0 (безопасный):\n")
+                    for level, enabled in dangers.items():
+                        current = int(enabled)
+                        while True:
+                            value = input(C.W + f"{level} (текущее: {current}): ")
+                            if value in ("1", "0"):
+                                pending_dangers[level] = value == "1"
+                                break
                             print(C.R + "❌ Неверный ввод! Введите 1 или 0." + C.RESET)
-                save_settings(dangers)
-                input(C.Y + "\n✅ Настройки обновлены. Enter..." + C.RESET)
+                try:
+                    if sec_choice == "1":
+                        save_settings(pending_dangers)
+                        print(C.G + "\n✅ Настройки обновлены." + C.RESET)
+                    else:
+                        pending_dangers = restoretodefaults()
+                        print(C.G + "\n✅ Настройки возвращены к стандартным." + C.RESET)
+                    dangers = pending_dangers
+                except OSError as exc:
+                    print(C.R + f"\n❌ Не удалось сохранить настройки анализа: {exc}" + C.RESET)
 
-            elif sec_choice == '2':
-                dangers = restoretodefaults()
-                save_settings(dangers)
-                input(C.Y + "\n✅ Настройки возвращены к стандартным. Enter..." + C.RESET)
+                input(C.Y + "\n⏎ Нажмите Enter, чтобы вернуться в меню..." + C.RESET)
 
             elif sec_choice == '3':
                 print("\n" + C.C + "═" * 40 + C.RESET)

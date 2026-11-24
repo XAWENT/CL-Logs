@@ -70,6 +70,8 @@ class GuiOperationTests(unittest.TestCase):
         self.app = app = LogAnalyzerApp.__new__(LogAnalyzerApp)
         app.root = Mock()
         app.log_queue = queue.Queue()
+        app.delivery = Mock()
+        app._delivery_counts = app.delivery.counts.return_value = (0, 0, 0, 0)
         app._active_operation = None
         app._queue_callback = None
         app._closing = False

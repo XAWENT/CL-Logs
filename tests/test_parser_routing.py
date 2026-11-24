@@ -85,6 +85,20 @@ class ParserRoutingTests(unittest.TestCase):
             source="N",
         )
 
+    def test_ordinary_json_splits_iso_timestamp_for_display(self):
+        self.assert_fields(
+            json.dumps({"timestamp": "2024-01-15T10:30:45.123456789+02:00", "message": "ready"}),
+            format="json",
+            timestamp="2024-01-15T10:30:45.123456789+02:00",
+            date="2024-01-15",
+            time="10:30:45.123456789",
+        )
+        self.assert_fields(
+            json.dumps({"timestamp": TIMESTAMP, "date": "custom date", "time": "custom time"}),
+            date="custom date",
+            time="custom time",
+        )
+
     def test_specialized_json_uses_distinguishing_fields(self):
         cases = [
             (
@@ -137,6 +151,30 @@ class ParserRoutingTests(unittest.TestCase):
         for body, expected in cases:
             with self.subTest(body=body):
                 self.assert_fields(f"{TIMESTAMP} {body}", timestamp=TIMESTAMP, **expected)
+
+    def test_cri_removes_record_tag_and_uses_explicit_severity(self):
+        cases = (
+            ("stdout F ERROR gateway timeout", "stdout", "ERROR", "ERROR gateway timeout"),
+            ("stderr F INFO bootstrap complete", "stderr", "INFO", "INFO bootstrap complete"),
+            ("stdout P [WARN] retrying ", "stdout", "WARN", "[WARN] retrying"),
+            ("stderr F", "stderr", "ERROR", ""),
+        )
+        for body, stream, level, message in cases:
+            with self.subTest(body=body):
+                self.assert_fields(f"{TIMESTAMP} {body}", format="k8s_cri", module=stream,
+                                   level=level, message=message)
+
+    def test_docker_formats_prefer_explicit_severity_to_stream_and_message_text(self):
+        cases = (
+            (f"{TIMESTAMP} stdout ERROR: request timed out", "docker", "ERROR"),
+            (f"{TIMESTAMP} checkout | INFO previous ERROR cleared", "docker", "INFO"),
+            (json.dumps({"log": "[INFO] ready\n", "stream": "stderr", "time": TIMESTAMP}), "docker_json", "INFO"),
+            (json.dumps({"log": "FATAL process crashed\n", "stream": "stdout", "time": TIMESTAMP}),
+             "docker_json", "CRITICAL"),
+        )
+        for line, format_name, level in cases:
+            with self.subTest(line=line):
+                self.assert_fields(line, format=format_name, level=level)
 
     def test_journal_and_legacy_syslog_have_separate_routes(self):
         self.assert_fields(

@@ -19,12 +19,14 @@ class NotificationTests(unittest.TestCase):
         directory = stack.enter_context(tempfile.TemporaryDirectory())
         self.config_path = Path(directory) / "user_config.json"
         self.app = gui.LogAnalyzerApp.__new__(gui.LogAnalyzerApp)
+        self.app.delivery = Mock()
         self.app.user_config_path = self.config_path
         stack.enter_context(patch.object(cli, "NOTIFICATION_CONFIG", self.config_path))
         self.env = stack.enter_context(patch.dict(os.environ, {}, clear=True))
         self.get = stack.enter_context(patch("requests.get"))
         self.post = stack.enter_context(patch("requests.post"))
         self.showinfo = stack.enter_context(patch.object(gui.messagebox, "showinfo"))
+        self.showerror = stack.enter_context(patch.object(gui.messagebox, "showerror"))
         self.askyesno = stack.enter_context(patch.object(gui.messagebox, "askyesno"))
         self.askstring = stack.enter_context(patch.object(gui.simpledialog, "askstring"))
         self.output = io.StringIO()
@@ -72,7 +74,7 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(self.app.send_notification("ERROR", "test", "sample"))
         self.post.assert_not_called()
 
-    def test_cli_disable_persists_and_gui_can_reenable_same_hash(self):
+    def test_cli_disable_persists_and_gui_verifies_saved_hash_before_enabling(self):
         self.env[NOTIFICATION_URL_ENV] = "https://notifications.example"
         self.save_legacy_hash()
         self.assertEqual(cli.check_notifications_status(), ("LOCAL123", True))
@@ -89,11 +91,32 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(self.app.can_send_notifications())
         self.assertFalse(self.app.send_notification("ERROR", "test", "sample"))
         self.askyesno.return_value = True
+        self.get.return_value = Mock(status_code=200)
+        self.post.return_value = Mock(status_code=200)
         self.assertTrue(self.app.setup_notifications_gui())
         self.assertTrue(self.app.can_send_notifications())
         self.assertEqual(cli.check_notifications_status(), ("LOCAL123", True))
-        self.get.assert_not_called()
-        self.post.assert_not_called()
+        self.get.assert_called_once()
+        self.assertEqual(self.post.call_args.kwargs["json"]["user_hash"], "LOCAL123")
+
+    def test_rejected_saved_recipient_remains_disabled_after_explicit_enable(self):
+        self.env[NOTIFICATION_URL_ENV] = "https://notifications.example"
+        self.config_path.write_text(
+            '{"user_hash": "Saved123", "notifications_enabled": false}', encoding="utf-8"
+        )
+        original = self.config_path.read_bytes()
+        self.app.load_user_config()
+        self.get.return_value = Mock(status_code=200)
+        self.post.return_value = Mock(status_code=404)
+        self.askyesno.side_effect = [True, False]
+
+        with patch("builtins.input", side_effect=["y", "n"]):
+            self.assertEqual(cli.setup_notifications(), ("Saved123", False))
+        self.assertFalse(self.app.setup_notifications_gui())
+        self.assertFalse(self.app.can_send_notifications())
+        self.assertEqual(self.config_path.read_bytes(), original)
+        self.assertEqual([call.kwargs["json"]["user_hash"] for call in self.post.call_args_list],
+                         ["Saved123", "Saved123"])
 
     def test_canceling_hash_change_preserves_configuration(self):
         self.env[NOTIFICATION_URL_ENV] = "https://notifications.example"
@@ -127,6 +150,20 @@ class NotificationTests(unittest.TestCase):
         self.post.side_effect = [Mock(status_code=200), Mock(status_code=503)]
         self.assertFalse(self.app.send_notification("ERROR", "test", "sample"))
 
+    def test_successful_empty_responses_count_for_both_deliveries(self):
+        self.env[NOTIFICATION_URL_ENV] = "https://notifications.example"
+        self.save_legacy_hash()
+        self.post.side_effect = [Mock(status_code=202), Mock(status_code=204)]
+        self.assertTrue(self.app.send_notification("ERROR", "test", "sample"))
+        self.assertEqual(self.post.call_count, 2)
+
+    def test_inactive_recipient_can_be_saved_locally(self):
+        self.app.load_user_config()
+        self.assertTrue(self.app.save_recipient_hash("  Offline123  "))
+        self.assertEqual(load_config(self.config_path), ("Offline123", False))
+        self.get.assert_not_called()
+        self.post.assert_not_called()
+
     def test_cli_and_gui_mask_sensitive_notification_fields_before_delivery(self):
         self.env[NOTIFICATION_URL_ENV] = "https://notifications.example"
         self.save_legacy_hash()
@@ -153,25 +190,46 @@ class NotificationTests(unittest.TestCase):
         self.post.return_value.json.return_value = {"user": {"first_name": "Test"}}
         self.app.load_user_config()
 
-        with patch("builtins.input", return_value="cli12345"):
-            self.assertEqual(cli.setup_notifications(), ("CLI12345", True))
-        self.askstring.return_value = "gui12345"
+        with patch("builtins.input", return_value="  Cli12345  "):
+            self.assertEqual(cli.setup_notifications(), ("Cli12345", True))
+        self.askstring.return_value = "  Gui12345  "
         self.assertTrue(self.app.setup_notifications_gui(change_hash=True))
-        self.assertEqual(cli.check_notifications_status(), ("GUI12345", True))
+        self.assertEqual(cli.check_notifications_status(), ("Gui12345", True))
 
-        self.assertTrue(cli.send_notification("ERROR", "test", "sample", user_hash="CLI12345"))
+        self.assertTrue(cli.send_notification("ERROR", "test", "sample", user_hash="Cli12345"))
         self.assertTrue(self.app.send_notification("ERROR", "test", "sample"))
         base_url = "https://notifications.example/api"
         self.assertEqual([call.args[0] for call in self.get.call_args_list], [f"{base_url}/"] * 2)
         posts = [(call.args[0], call.kwargs["json"]["user_hash"]) for call in self.post.call_args_list]
         self.assertEqual(posts, [
-            (f"{base_url}/send", "CLI12345"),
-            (f"{base_url}/send", "GUI12345"),
-            (f"{base_url}/send", "CLI12345"),
-            (f"{base_url}/send_email", "CLI12345"),
-            (f"{base_url}/send", "GUI12345"),
-            (f"{base_url}/send_email", "GUI12345"),
+            (f"{base_url}/send", "Cli12345"),
+            (f"{base_url}/send", "Gui12345"),
+            (f"{base_url}/send", "Cli12345"),
+            (f"{base_url}/send_email", "Cli12345"),
+            (f"{base_url}/send", "Gui12345"),
+            (f"{base_url}/send_email", "Gui12345"),
         ])
+
+    def test_gui_hash_settings_verify_before_replacing_active_recipient(self):
+        self.env[NOTIFICATION_URL_ENV] = "https://notifications.example"
+        self.save_legacy_hash()
+        self.get.return_value = Mock(status_code=200)
+        original = self.config_path.read_bytes()
+
+        self.assertFalse(self.app.save_recipient_hash("x"))
+        self.post.assert_not_called()
+        self.post.return_value = Mock(status_code=404)
+        self.assertFalse(self.app.save_recipient_hash("Rejected123"))
+        self.assertEqual(self.config_path.read_bytes(), original)
+        self.assertEqual(self.app.user_hash, "LOCAL123")
+        self.assertTrue(self.app.can_send_notifications())
+        self.assertEqual(self.showerror.call_count, 2)
+
+        self.post.return_value = Mock(status_code=204)
+        self.post.return_value.json.side_effect = ValueError("no response body")
+        self.assertTrue(self.app.save_recipient_hash("  Accepted123  "))
+        self.assertEqual(self.post.call_args.kwargs["json"]["user_hash"], "Accepted123")
+        self.assertEqual(load_config(self.config_path), ("Accepted123", True))
 
 
 if __name__ == "__main__":

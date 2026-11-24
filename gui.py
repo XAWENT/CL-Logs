@@ -4,19 +4,21 @@ from pathlib import Path
 import threading
 import queue
 import re
-import requests
 from log_parser.redaction import MASK, mask_sensitive
+from logic.notification_queue import NotificationQueue
 from logic.notifications import (
     NOTIFICATION_CONFIG,
     NOTIFICATION_URL_REQUIRED,
+    RecipientVerificationError,
     load_config,
     notification_url,
     save_config,
     send_log_notification,
+    verify_notification_recipient,
 )
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
-from logic.settings import load_settings, save_settings, restoretodefaults
+from logic.settings import default_dangers, load_settings, save_settings
 
 class LogAnalyzerApp:
     def __init__(self, root):
@@ -42,6 +44,8 @@ class LogAnalyzerApp:
         self.load_user_config()
 
         self.log_queue = queue.Queue()
+        self.delivery = NotificationQueue(send_log_notification)
+        self._delivery_counts = (0, 0, 0, 0)
         self._active_operation = None
         self._queue_callback = None
         self._closing = False
@@ -66,6 +70,8 @@ class LogAnalyzerApp:
         except OSError as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить настройки уведомлений: {e}")
             return False
+        if self.user_hash != user_hash or not enabled:
+            self.delivery.discard_pending()
         self.user_hash = user_hash
         self.notifications_enabled = enabled
         return True
@@ -79,64 +85,38 @@ class LogAnalyzerApp:
             messagebox.showinfo("Уведомления", NOTIFICATION_URL_REQUIRED)
             return False
 
-        if self.user_hash and not change_hash:
-            answer = messagebox.askyesno(
-                "Настройка уведомлений",
-                f"Найден сохранённый user_hash: {MASK}\nИспользовать его?"
-            )
-            if answer:
-                return self.save_user_config(self.user_hash, True)
+        recipient = ""
+        if self.user_hash and not change_hash and messagebox.askyesno(
+            "Настройка уведомлений",
+            f"Найден сохранённый user_hash: {MASK}\nИспользовать его?"
+        ):
+            recipient = self.user_hash
 
         while True:
-            new_hash = simpledialog.askstring(
-                "User hash",
-                "Введите ваш user_hash (или оставьте поле пустым для отмены):",
-                show="*",
-            )
-            if new_hash is None or new_hash.strip() == "":
-                return False
-
-            new_hash = new_hash.strip().upper()
-            if len(new_hash) < 8:
-                messagebox.showerror("Ошибка", "Хэш слишком короткий (минимум 8 символов).")
-                continue
+            if not recipient:
+                value = simpledialog.askstring(
+                    "User hash",
+                    "Введите ваш user_hash (или оставьте поле пустым для отмены):",
+                    show="*",
+                )
+                recipient = (value or "").strip()
+                if not recipient:
+                    return False
 
             try:
-                resp = requests.get(f"{base_url}/", timeout=3)
-                if resp.status_code != 200:
-                    messagebox.showerror("Ошибка", "Сервер недоступен. Проверьте соединение.")
-                    if not messagebox.askyesno("Повторить", "Попробовать снова?"):
-                        return False
-                    continue
+                name = verify_notification_recipient(base_url, recipient)
+            except RecipientVerificationError as exc:
+                messagebox.showerror("Ошибка", str(exc))
+                if not messagebox.askyesno("Повторить", "Попробовать снова?"):
+                    return False
+                recipient = ""
+                continue
 
-                test_data = {
-                    "user_hash": new_hash,
-                    "message": "🔧 Тестовая проверка системы уведомлений\n✅ Соединение установлено",
-                    "level": "INFO"
-                }
-                response = requests.post(f"{base_url}/send", json=test_data, timeout=5)
-                if response.status_code == 200:
-                    user_data = response.json().get('user', {})
-                    if not self.save_user_config(new_hash, True):
-                        return False
-                    messagebox.showinfo(
-                        "Успех",
-                        f"Настройка завершена!\nПользователь: {user_data.get('first_name', 'Unknown')}"
-                    )
-                    return True
-                elif response.status_code == 404:
-                    error_msg = response.json().get('error', 'User not found')
-                    messagebox.showerror("Ошибка", f"Неверный user_hash: {error_msg}")
-                else:
-                    messagebox.showerror("Ошибка", f"Ошибка сервера: {response.status_code}")
-            except requests.exceptions.ConnectionError:
-                messagebox.showerror("Ошибка", "Не удалось подключиться к серверу.")
-                if not messagebox.askyesno("Повторить", "Попробовать снова?"):
-                    return False
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Ошибка: {str(e)}")
-                if not messagebox.askyesno("Повторить", "Попробовать снова?"):
-                    return False
+            if not self.save_user_config(recipient, True):
+                return False
+            message = f"Настройка завершена!\nПользователь: {name}" if name else "Настройка завершена!"
+            messagebox.showinfo("Успех", message)
+            return True
 
     def send_notification(self, level, message, source, timestamp=""):
         if not self.notifications_enabled:
@@ -174,7 +154,7 @@ class LogAnalyzerApp:
             if self.setup_notifications_gui():
                 self.update_stats_display()
                 messagebox.showinfo("Уведомления", "Уведомления включены.")
-            win.destroy()
+                win.destroy()
 
         def disable():
             if self.save_user_config(self.user_hash, False):
@@ -186,7 +166,7 @@ class LogAnalyzerApp:
             if self.setup_notifications_gui(change_hash=True):
                 self.update_stats_display()
                 messagebox.showinfo("Успех", "Хэш обновлён.")
-            win.destroy()
+                win.destroy()
 
         btn_frame = ttk.Frame(main)
         btn_frame.pack(fill=tk.X, pady=10)
@@ -295,6 +275,8 @@ class LogAnalyzerApp:
 
         stats_frame = ttk.LabelFrame(right_panel, text="Статистика")
         stats_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.delivery_status = tk.StringVar()
+        ttk.Label(stats_frame, textvariable=self.delivery_status, wraplength=225).pack(anchor=tk.W)
         self.stats_text = scrolledtext.ScrolledText(stats_frame, wrap=tk.WORD,
                                                     font=("Arial", 9), height=8, state='disabled')
         self.stats_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -324,8 +306,7 @@ class LogAnalyzerApp:
         entry.pack(fill=tk.X, pady=5)
 
         def save():
-            new_hash = hash_var.get().strip()
-            if not self.save_user_config(new_hash, bool(new_hash) and self.notifications_enabled):
+            if not self.save_recipient_hash(hash_var.get()):
                 return
             self.update_stats_display()
             messagebox.showinfo("Сохранено", "User hash сохранён в user_config.json")
@@ -341,6 +322,16 @@ class LogAnalyzerApp:
         ttk.Button(btn_frame, text="Сохранить", command=save).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=cancel).pack(side=tk.RIGHT, padx=5)
         win.protocol("WM_DELETE_WINDOW", cancel)
+
+    def save_recipient_hash(self, recipient):
+        recipient = recipient.strip()
+        if self.notifications_enabled and recipient and recipient != self.user_hash:
+            try:
+                verify_notification_recipient(notification_url(), recipient)
+            except RecipientVerificationError as exc:
+                messagebox.showerror("Ошибка", str(exc))
+                return False
+        return self.save_user_config(recipient, bool(recipient) and self.notifications_enabled)
 
     def toggle_theme(self):
         if self.current_theme.get() == "forest-light":
@@ -502,33 +493,33 @@ class LogAnalyzerApp:
         button_frame = ttk.Frame(self.settings_window)
         button_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        def save_and_close():
-            for lvl in self.dangers:
-                self.dangers[lvl] = check_vars[lvl].get()
-            save_settings(self.dangers)
-            self.update_stats_display()
-            if self.settings_window:
-                self.settings_window.destroy()
-            self.settings_window = None
-            messagebox.showinfo("Успех", "Настройки сохранены!")
-
-        def restore_defaults():
-            self.dangers = restoretodefaults()
-            save_settings(self.dangers)
-            self.update_stats_display()
-            if self.settings_window:
-                self.settings_window.destroy()
-            self.settings_window = None
-            messagebox.showinfo("Успех", "Настройки восстановлены по умолчанию!")
-
         def on_closing():
             if self.settings_window:
                 self.settings_window.destroy()
             self.settings_window = None
 
+        def save_and_close(dangers, success_message):
+            try:
+                save_settings(dangers)
+            except OSError as exc:
+                messagebox.showerror("Ошибка", f"Не удалось сохранить настройки анализа: {exc}")
+                return
+            self.dangers = dangers
+            self.update_stats_display()
+            on_closing()
+            messagebox.showinfo("Успех", success_message)
+
         self.settings_window.protocol("WM_DELETE_WINDOW", on_closing)
-        ttk.Button(button_frame, text="Сохранить", command=save_and_close).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="По умолчанию", command=restore_defaults).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            button_frame, text="Сохранить", command=lambda: save_and_close(
+                {level: var.get() for level, var in check_vars.items()}, "Настройки сохранены!"
+            )
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            button_frame, text="По умолчанию", command=lambda: save_and_close(
+                default_dangers.copy(), "Настройки восстановлены по умолчанию!"
+            )
+        ).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Отмена", command=on_closing).pack(side=tk.RIGHT, padx=5)
 
     def process_queue(self):
@@ -557,10 +548,18 @@ class LogAnalyzerApp:
                 self._finish_log_operation()
                 self.status_var.set("Мониторинг завершен")
         if not self._closing:
+            counts = self.delivery.counts()
+            if counts != self._delivery_counts:
+                self._delivery_counts = counts
+                sent, failed, skipped, pending = counts
+                self.delivery_status.set(
+                    f"Уведомления: доставлено {sent}, сбоев {failed}, пропущено {skipped}, в работе {pending}"
+                )
             self._queue_callback = self.root.after(delay, self.process_queue)
 
     def close(self):
         self._closing = True
+        self.delivery.close()
         if self._active_operation is not None:
             self._active_operation.set()
             self._active_operation = None
@@ -588,10 +587,7 @@ class LogAnalyzerApp:
         self.update_count_label()
 
         if entry["is_danger"] and self.can_send_notifications():
-            timestamp = f"{entry['date']} {entry['time']}" if entry["date"] != "N" else entry["time"]
-            threading.Thread(target=self.send_notification,
-                             args=(entry["level"], entry["message"], entry["source"], timestamp),
-                             daemon=True).start()
+            self.delivery.submit(entry, self.user_hash)
 
     def format_entry_for_list(self, entry, display_index):
         time_display = entry["time"] if entry["date"] == "N" else entry["time"]

@@ -1,6 +1,14 @@
 from __future__ import annotations
 import json
+import re
 from typing import Any, Dict
+
+
+_ISO_TIMESTAMP = re.compile(
+    r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)"
+    r"(?:Z|[+-]\d{2}:?\d{2})?"
+)
+
 
 class JSONParser:
     priority = -100
@@ -16,14 +24,18 @@ class JSONParser:
         if not isinstance(data, dict):
             raise ValueError("JSON root is not an object")
 
+        timestamp = data.get("timestamp", "N")
+        iso = _ISO_TIMESTAMP.fullmatch(timestamp) if isinstance(timestamp, str) else None
+        date, time = iso.groups() if iso else ("N", "N")
+
         return {
             **data,
             "format": "json",
             "raw": raw,
 
-            "date": data.get("date", "N"),
-            "time": data.get("time", "N"),
-            "timestamp": data.get("timestamp", "N"),
+            "date": data.get("date", date),
+            "time": data.get("time", time),
+            "timestamp": timestamp,
 
             "level": data.get("level", "N"),
             "source": data.get("source", "json"),

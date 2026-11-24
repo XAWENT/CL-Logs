@@ -7,6 +7,8 @@ import re
 import json
 from typing import Dict, Any
 
+from log_parser.fallback import LEVEL_MAP
+
 
 class DockerParser:
     """Parser for Docker container logs."""
@@ -22,12 +24,13 @@ class DockerParser:
         r"(.*)$"  # message
     )
     
-    # Docker with stream type (stdout/stderr)
+    # CRI adds an F (full) or P (partial) tag after the stream.
     _stream_pattern = re.compile(
-        r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s+"
-        r"(stdout|stderr)\s+"
-        r"(.*)$"
+        r"^(?P<timestamp>(?P<date>\d{4}-\d{2}-\d{2})T"
+        r"(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?:Z|[+-]\d{2}:?\d{2})?)\s+"
+        r"(?P<stream>stdout|stderr)\s+(?:(?P<tag>[FP])(?:[ \t]|$))?(?P<message>.*)$"
     )
+    _level_prefix = re.compile(r"^\s*(?:\[([A-Za-z]+)\]|([A-Za-z]+):?)(?=\s|$)")
     
     def match(self, line: str) -> bool:
         stripped = line.strip()
@@ -49,22 +52,17 @@ class DockerParser:
         # Try stream pattern first
         m = self._stream_pattern.match(raw)
         if m:
-            timestamp, stream, message = m.groups()
-            level = "ERROR" if stream == "stderr" else "INFO"
-            
-            # Parse timestamp
-            if "T" in timestamp:
-                date_part = timestamp.split("T")[0]
-                time_part = timestamp.split("T")[1].rstrip("Z")
-            
+            stream, tag, message = m.group("stream", "tag", "message")
+            level = self._explicit_level(message) or ("ERROR" if stream == "stderr" else "INFO")
+            format_name = "k8s_cri" if tag else "docker"
             return {
-                "format": "docker",
+                "format": format_name,
                 "raw": raw,
-                "date": date_part,
-                "time": time_part,
-                "timestamp": timestamp,
+                "date": m["date"],
+                "time": m["time"],
+                "timestamp": m["timestamp"],
                 "level": level,
-                "source": "docker",
+                "source": "cri" if tag else "docker",
                 "module": stream,
                 "thread": "N",
                 "ids": [],
@@ -86,7 +84,7 @@ class DockerParser:
                 date_part, time_part = timestamp.split()
             
             # Detect level from message
-            level = self._detect_level(message)
+            level = self._explicit_level(message) or self._detect_level(message)
             
             return {
                 "format": "docker",
@@ -140,7 +138,9 @@ class DockerParser:
         
         # Stream type
         stream = data.get("stream", "N")
-        level = "ERROR" if stream == "stderr" else self._detect_level(log)
+        level = self._explicit_level(log)
+        if level is None:
+            level = "ERROR" if stream == "stderr" else self._detect_level(log)
         
         container = data.get("container")
         source = container.get("name", "docker") if isinstance(container, dict) else container or "docker"
@@ -160,6 +160,12 @@ class DockerParser:
             "stream": stream
         }
     
+    def _explicit_level(self, message: str) -> str | None:
+        match = self._level_prefix.match(message)
+        if match:
+            return LEVEL_MAP.get((match[1] or match[2]).upper())
+        return None
+
     def _detect_level(self, message: str) -> str:
         """Detect log level from message content."""
         msg_upper = message.upper()

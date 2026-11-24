@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from log_parser import parse_file, parse_line
 from log_parser import parser_engine
+from log_parser.redaction import mask_sensitive
 from logic.onetime_logic import analyze_log
 from logic.realtime_logic import iterate_realtime
 
@@ -100,6 +101,45 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(entries[-1]["raw"], "ERROR failed password=******")
         self.assertNotIn("opaque-", repr(parsed))
         self.assertNotIn("opaque-", repr(entries))
+
+    def test_docker_payload_continuations_are_scoped_to_the_container_and_stream(self):
+        def row(payload, stream="stdout", container="api"):
+            return json.dumps({"log": payload + "\n", "stream": stream,
+                               "container": {"name": container}, "time": "2026-11-24T08:05:02Z"})
+
+        opening = row("-----BEGIN PRIVATE KEY-----")
+        rest = [row("healthy", stream="stderr"), row("listening", container="web"),
+                row("synthetic-private-body"), row("-----END PRIVATE KEY-----"), row("ready")]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "docker.log"
+            path.write_text("\n".join([opening, *rest]) + "\n", encoding="utf-8")
+            entries, _ = analyze_log(path, {})
+            self.assertEqual([e["message"] for e in entries],
+                             ["******", "healthy", "listening", "******", "******", "ready"])
+            self.assertNotIn("synthetic-private-body", repr(entries))
+
+            path.write_text(opening + "\n", encoding="utf-8")
+            stop = Mock()
+            stop.is_set.return_value = False
+            def append_after_start(_timeout):
+                with path.open("a", encoding="utf-8") as log:
+                    log.write("\n".join(rest) + "\n")
+                return False
+            stop.wait.side_effect = append_after_start
+            live = iterate_realtime(path, {}, stop)
+            try:
+                events = [next(live) for _ in rest]
+            finally:
+                live.close()
+            self.assertEqual([e["message"] for e in events],
+                             ["healthy", "listening", "******", "******", "ready"])
+            self.assertNotIn("synthetic-private-body", repr(events))
+
+    def test_multiline_field_can_open_a_pem_block_on_the_next_line(self):
+        safe = mask_sensitive("private_key:\n-----BEGIN PRIVATE KEY-----\nsynthetic-body\n"
+                              "-----END PRIVATE KEY-----\nINFO ready")
+        self.assertNotIn("synthetic-body", safe)
+        self.assertTrue(safe.endswith("INFO ready"))
 
     def test_live_reader_waits_for_complete_lines_and_keeps_existing_redaction_state(self):
         with tempfile.TemporaryDirectory() as directory:
